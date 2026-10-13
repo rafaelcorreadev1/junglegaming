@@ -18,13 +18,17 @@
 
 ## Decisão: REFUND + ROLLBACK sobre a mesma BET
 
-Uma `BET` só pode ter o débito devolvido uma vez.
+Uma transação aceita **uma única** reversão processada, de qualquer tipo. Isso cobre a regra do desafio (sem duas reversões do mesmo tipo) e impede devolver duas vezes o mesmo débito.
 
 | Sequência | Resultado |
 | --- | --- |
 | `REFUND(BET)` depois `ROLLBACK(BET)` | `ROLLBACK` rejeitado com `ALREADY_REVERSED` |
 | `ROLLBACK(BET)` depois `REFUND(BET)` | `REFUND` rejeitado com `ALREADY_REVERSED` |
-| `REFUND(BET)` depois `ROLLBACK(REFUND)` | Aceito: desfaz o refund; a `BET` volta a valer e pode ser revertida de novo |
+| `REFUND(BET)` depois `ROLLBACK(REFUND)` | Aceito: debita de novo o valor devolvido. A `BET` volta a valer, mas não aceita nova reversão |
+| `ROLLBACK(REFUND)` duas vezes | O segundo é rejeitado com `ALREADY_REVERSED` |
+| `ROLLBACK(ROLLBACK)` | Rejeitado com `REFERENCE_KIND_NOT_ALLOWED` |
+
+O domínio (spec 03) já aplica essa regra a partir do campo `Reference.Reversed`. Esta spec entrega a consulta que preenche o campo e o índice único que garante a regra no banco.
 
 ## Requisitos — referência indisponível
 

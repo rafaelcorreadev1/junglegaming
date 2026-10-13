@@ -58,30 +58,61 @@ Operação e referência devem coincidir em provedor, jogador, carteira, moeda e
 
 ## Códigos de falha (`failureCode`)
 
-Estáveis e documentados. Lista inicial:
+Estáveis e documentados. Todo código abaixo é um **resultado definitivo**: a transação fica `REJECTED` (ou `FAILED`), é persistida e não muda mais.
 
-| Código | Quando | Corrigível? |
-| --- | --- | --- |
-| `INSUFFICIENT_FUNDS` | `BET` sem saldo | Não |
-| `REVERSAL_INSUFFICIENT_FUNDS` | Reversão que debitaria mais que o saldo | Não |
-| `CURRENCY_MISMATCH` | Moeda diferente da carteira | Sim |
-| `WALLET_NOT_FOUND` / `PLAYER_MISMATCH` | Carteira inexistente ou de outro jogador | Sim |
-| `REFERENCE_NOT_FOUND` | Referência não chegou até expirar | Não |
-| `REFERENCE_NOT_PROCESSED` | Referência terminou `REJECTED`/`FAILED` | Não |
-| `REFERENCE_MISMATCH` | Diverge em provedor/jogador/carteira/moeda/rodada/valor | Não |
-| `REFERENCE_KIND_NOT_ALLOWED` | Tipo da referência inválido para a operação | Não |
-| `ALREADY_REVERSED` | Referência já tem reversão bem-sucedida | Não |
+| Código | Quando |
+| --- | --- |
+| `INSUFFICIENT_FUNDS` | `BET` sem saldo |
+| `REVERSAL_INSUFFICIENT_FUNDS` | `ROLLBACK` que debitaria mais que o saldo |
+| `BALANCE_LIMIT_EXCEEDED` | Crédito que passaria do limite representável do saldo |
+| `PLAYER_MISMATCH` | A carteira pertence a outro jogador |
+| `CURRENCY_MISMATCH` | Moeda diferente da carteira |
+| `REFERENCE_NOT_FOUND` | Referência não chegou até expirar (spec 08) |
+| `REFERENCE_NOT_PROCESSED` | Referência terminou `REJECTED` ou `FAILED` |
+| `REFERENCE_MISMATCH` | Diverge em provedor, jogador, carteira, moeda ou rodada |
+| `REFERENCE_AMOUNT_MISMATCH` | Valor da reversão diferente do valor referenciado |
+| `REFERENCE_KIND_NOT_ALLOWED` | Tipo da referência inválido para a operação |
+| `ALREADY_REVERSED` | A referência já tem uma reversão processada |
+| `PROCESSING_FAILED` | Falha permanente de infraestrutura (`FAILED`) |
+
+**Entrada corrigível** é outra coisa: é o erro de validação (`ValidationError`, com o nome do campo). Nada é persistido, a resposta é `400` e o provedor pode reenviar corrigido. Exemplos: campo obrigatório ausente, `BET` com valor zero, `REFUND` sem referência, `kind: "OPENING"`.
+
+## Como as regras são aplicadas
+
+`ApplyWager(tx, wallet, ref, entryID, now)` decide o resultado e o registra na transação e na carteira.
+
+- Rejeição de negócio **não é erro**: a função retorna sem erro e a transação fica `REJECTED` com `failureCode`.
+- Erro de retorno é reservado a uso incorreto (transação já terminal, carteira errada).
+- O lançamento retornado é `nil` quando o saldo não muda (`LOSS`, rejeição, espera por referência).
+- `ref` traz a transação referenciada (ou `nil`, se ainda não chegou) e se ela já foi revertida. Quem busca isso no banco é o caso de uso (specs 07 e 08).
+
+Ordem das verificações: jogador → moeda → referência (contexto, tipo, estado, valor, já revertida) → movimentação.
+
+## Decisões
+
+- IDs e o instante (`now`) entram como parâmetro. O domínio não gera UUID nem lê o relógio, então os testes são determinísticos e o pacote fica só com a biblioteca padrão.
+- `WIN` com referência informada segue a mesma regra de espera: se a `BET` não chegou, fica `PENDING_REFERENCE`.
+- `BET` e `LOSS` não aceitam referência (erro de validação).
+- `LedgerEntry` tem um construtor só, usado na criação e na reidratação: o lançamento não tem comportamento a reaplicar, apenas a equação do saldo a conferir.
 
 ## Entregáveis
 
-- `internal/domain/`: `wallet.go`, `ledger.go`, `wager_transaction.go`, `errors.go` + testes
+- `internal/domain/`: `errors.go`, `ledger.go`, `wallet.go`, `wager_transaction.go`, `wager_rules.go` + testes
 
 ## Critérios de aceite
 
-- [ ] Débito além do saldo retorna erro e não altera saldo nem versão.
-- [ ] `LOSS` não altera versão nem gera lançamento.
-- [ ] Toda transição inválida da máquina de estados é coberta por teste.
-- [ ] `internal/domain` importa apenas a biblioteca padrão.
+- [x] Débito além do saldo retorna erro e não altera saldo nem versão.
+- [x] `LOSS` não altera versão nem gera lançamento.
+- [x] Toda transição da máquina de estados, válida e inválida, é coberta por teste (5 estados × 4 destinos).
+- [x] Política de valor zero e de referência de cada tipo coberta por teste.
+- [x] Duas apostas de `80.00` sobre `100.00`, em sequência: uma processada, uma rejeitada, saldo `20.00`.
+- [x] `internal/domain` importa apenas a biblioteca padrão.
+
+## Status: concluída
+
+243 casos de teste no pacote `domain`, 99,7% das instruções cobertas. `go test`, `go vet` e `go test -race` (em container) passam.
+
+A disputa **simultânea** das duas apostas depende do lock no banco e é provada nas specs 05, 07 e 15; aqui a regra é provada em sequência.
 
 ## Para estudar
 
