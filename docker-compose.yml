@@ -1,0 +1,33 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-wagering}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-wagering}
+      POSTGRES_DB: ${POSTGRES_DB:-wagering}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  app:
+    build: .
+    environment:
+      HTTP_ADDR: ":8080"
+      DATABASE_URL: postgres://${POSTGRES_USER:-wagering}:${POSTGRES_PASSWORD:-wagering}@postgres:5432/${POSTGRES_DB:-wagering}?sslmode=disable
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      SHUTDOWN_TIMEOUT: ${SHUTDOWN_TIMEOUT:-20s}
+    ports:
+      - "${APP_PORT:-8080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    stop_grace_period: 30s
+
+volumes:
+  postgres-data:
