@@ -7,11 +7,19 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/fx"
 
+	"wagering-service/internal/application"
 	"wagering-service/internal/config"
 )
 
 var Module = fx.Module("postgres",
-	fx.Provide(NewPool),
+	fx.Provide(
+		NewPool,
+		fx.Annotate(NewTxManager, fx.As(new(application.TxManager))),
+		fx.Annotate(NewWalletRepository, fx.As(new(application.WalletRepository))),
+		fx.Annotate(NewWagerTransactionRepository, fx.As(new(application.WagerTransactionRepository))),
+		fx.Annotate(NewLedgerRepository, fx.As(new(application.LedgerRepository))),
+		fx.Annotate(NewOutboxRepository, fx.As(new(application.OutboxRepository))),
+	),
 )
 
 func NewPool(lc fx.Lifecycle, cfg config.Config) (*pgxpool.Pool, error) {

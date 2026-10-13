@@ -17,8 +17,10 @@ CREATE TABLE wager_transactions (
     reference_external_transaction_id TEXT,
     reference_transaction_id          UUID REFERENCES wager_transactions (id),
 
-    failure_code         TEXT,
-    result_balance_minor BIGINT,
+    failure_code            TEXT,
+    -- The balance reported to the provider; on a currency mismatch it is in the wallet currency, not the transaction one.
+    result_balance_minor    BIGINT,
+    result_balance_currency CHAR(3),
 
     created_at TIMESTAMPTZ NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL,
@@ -64,7 +66,9 @@ CREATE TABLE wager_transactions (
         (status IN ('REJECTED', 'FAILED')) = (failure_code IS NOT NULL)
     ),
     CONSTRAINT wager_transactions_result_balance CHECK (
-        (result_balance_minor IS NULL OR result_balance_minor >= 0)
+        (result_balance_minor IS NULL) = (result_balance_currency IS NULL)
+        AND (result_balance_minor IS NULL OR result_balance_minor >= 0)
+        AND (result_balance_currency IS NULL OR result_balance_currency ~ '^[A-Z]{3}$')
         AND (status <> 'PROCESSED' OR result_balance_minor IS NOT NULL)
     ),
     CONSTRAINT wager_transactions_updated_not_before_created CHECK (updated_at >= created_at)

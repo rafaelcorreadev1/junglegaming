@@ -61,6 +61,7 @@ O banco impõe as invariantes financeiras sozinho: mesmo que a aplicação tenha
 - **Campos externos anuláveis + `CHECK` de origem**: `OPENING` não tem provedor. `UNIQUE` ignora linhas com `NULL`, então as aberturas não colidem entre si.
 - **Outbox com `locked_until`**: é a "reserva com prazo" da spec 10.
 - As colunas de retry de `PENDING_REFERENCE` entram em uma migration da spec 08.
+- **Saldo resultante com moeda própria** (`result_balance_minor` + `result_balance_currency`): em `CURRENCY_MISMATCH` ele está na moeda da carteira, não na da transação (ajuste feito na spec 05).
 
 ## Como aplicar e reverter
 
@@ -89,7 +90,7 @@ docker compose run --rm migrate -path=/migrations -database=<url> version
 
 ## Status: concluída
 
-O teste aplica as migrations em um schema descartável e confere 21 violações (pelo SQLSTATE e pelo nome da constraint) e 5 casos que devem ser aceitos. Ele precisa de um PostgreSQL real e é pulado sem `TEST_DATABASE_URL`:
+O teste aplica as migrations em um schema descartável e confere 22 violações (pelo SQLSTATE e pelo nome da constraint) e 5 casos que devem ser aceitos. Ele precisa de um PostgreSQL real e é pulado sem `TEST_DATABASE_URL`:
 
 ```bash
 TEST_DATABASE_URL='postgres://wagering:wagering@localhost:5432/wagering?sslmode=disable' go test ./migrations/

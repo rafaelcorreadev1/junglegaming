@@ -148,7 +148,8 @@ func walletRow(n int, playerID string) row {
 func transactionRow(n, walletN int, kind string) row {
 	return row{
 		"id": id(n), "kind": kind, "status": "PROCESSED", "wallet_id": id(walletN), "player_id": "player-1",
-		"amount_minor": int64(2500), "currency": "BRL", "result_balance_minor": int64(7500),
+		"amount_minor": int64(2500), "currency": "BRL",
+		"result_balance_minor": int64(7500), "result_balance_currency": "BRL",
 		"provider_id": "provider-a", "external_transaction_id": fmt.Sprintf("ext-%d", n),
 		"idempotency_key": fmt.Sprintf("key-%d", n), "payload_hash": "hash",
 		"round_id": "round-1", "game_id": "game-1",
@@ -159,7 +160,8 @@ func transactionRow(n, walletN int, kind string) row {
 func openingRow(n, walletN int) row {
 	return row{
 		"id": id(n), "kind": "OPENING", "status": "PROCESSED", "wallet_id": id(walletN), "player_id": "player-1",
-		"amount_minor": int64(10000), "currency": "BRL", "result_balance_minor": int64(10000),
+		"amount_minor": int64(10000), "currency": "BRL",
+		"result_balance_minor": int64(10000), "result_balance_currency": "BRL",
 		"created_at": testNow, "updated_at": testNow,
 	}
 }
@@ -329,6 +331,14 @@ func TestSchemaEnforcesFinancialInvariants(t *testing.T) {
 			constraint: "wager_transactions_failure_code_by_status",
 		},
 		{
+			name: "result balance without its currency",
+			run: insertRow("wager_transactions", transactionRow(41, wallet, "BET").with(row{
+				"result_balance_currency": nil,
+			})),
+			code:       checkViolation,
+			constraint: "wager_transactions_result_balance",
+		},
+		{
 			name: "second processed reversal of the same transaction",
 			run: insertRow("wager_transactions", transactionRow(40, wallet, "ROLLBACK").with(row{
 				"reference_external_transaction_id": "ext-11", "reference_transaction_id": id(bet),
@@ -407,7 +417,7 @@ func TestSchemaEnforcesFinancialInvariants(t *testing.T) {
 		{
 			name: "a reversal still waiting for its reference",
 			run: insertRow("wager_transactions", transactionRow(61, wallet, "REFUND").with(row{
-				"status": "PENDING_REFERENCE", "result_balance_minor": nil,
+				"status": "PENDING_REFERENCE", "result_balance_minor": nil, "result_balance_currency": nil,
 				"reference_external_transaction_id": "ext-not-yet",
 			})),
 		},
