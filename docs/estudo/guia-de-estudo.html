@@ -171,7 +171,7 @@
   <p class="sub">O que foi construído em cada spec, por que foi feito assim e quais conceitos de Go aparecem, para quem vem de C#, Python e TypeScript.</p>
   <div class="meta">
     Repositório: github.com/rafaelcorreadev1/junglegaming<br>
-    Atualizado até a spec 04 · 13/10/2026
+    Atualizado até a spec 05 · 13/10/2026
   </div>
 </section>
 
@@ -197,7 +197,7 @@
       <tr><td>02</td><td>Money</td><td class="status done">Concluída</td></tr>
       <tr><td>03</td><td>Domínio: Wallet, Ledger, WagerTransaction</td><td class="status done">Concluída</td></tr>
       <tr><td>04</td><td>Schema e migrations</td><td class="status done">Concluída</td></tr>
-      <tr><td>05</td><td>Persistência e transação SQL</td><td class="status todo">A fazer</td></tr>
+      <tr><td>05</td><td>Persistência e transação SQL</td><td class="status done">Concluída</td></tr>
       <tr><td>06</td><td>Carteira: abertura, leitura, ledger paginado</td><td class="status todo">A fazer</td></tr>
       <tr><td>07</td><td>Operação: BET / WIN / LOSS e idempotência</td><td class="status todo">A fazer</td></tr>
       <tr><td>08</td><td>Reversões e referências pendentes</td><td class="status todo">A fazer</td></tr>
@@ -1166,7 +1166,7 @@ if !errors.As(err, &amp;pgErr) { ... }
     <thead><tr><th>Verificação</th><th>Resultado</th></tr></thead>
     <tbody>
       <tr><td><code>migrate up</code> → <code>down -all</code> → <code>up</code></td><td>Depois do <code>down</code> sobra só <code>schema_migrations</code>; o segundo <code>up</code> aplica as 4</td></tr>
-      <tr><td><code>go test ./migrations/</code> com banco real</td><td>21 violações recusadas e 5 casos válidos aceitos</td></tr>
+      <tr><td><code>go test ./migrations/</code> com banco real</td><td>22 violações recusadas e 5 casos válidos aceitos</td></tr>
       <tr><td><code>go test -race ./...</code> (em container)</td><td>Passou</td></tr>
       <tr><td><code>docker compose up --build</code></td><td><code>migrate</code> termina com código 0, depois <code>app</code> sobe e <code>/health/ready</code> responde 200</td></tr>
     </tbody>
@@ -1209,6 +1209,264 @@ TEST_DATABASE_URL='postgres://wagering:wagering@localhost:5432/wagering?sslmode=
     <li><code>000003_create_wallet_ledger_entries.up.sql</code></li>
     <li><code>000004_create_inbox_and_outbox.up.sql</code></li>
     <li><code>migrations_test.go</code>: a lista <code>rejected</code> é um resumo executável das invariantes</li>
+  </ol>
+</section>
+
+<!-- ============================ SPEC 05 ============================ -->
+<section class="chapter">
+  <div class="chapter-label">Spec 05</div>
+  <h1>Persistência e transação SQL</h1>
+  <p class="lead">A ponte entre o domínio e o banco: repositórios com SQL escrito à mão, uma transação compartilhada por todos eles e o lock por carteira que impede duas instâncias de gastarem o mesmo saldo.</p>
+
+  <h2>1. O que a spec pedia</h2>
+  <ul>
+    <li><code>pgx</code> com SQL explícito; transações, locks e constraints visíveis no código.</li>
+    <li>Um único mecanismo que delimita a transação SQL, compartilhada por todos os repositórios de um caso de uso.</li>
+    <li>Lock por carteira. Lock global é proibido; carteiras diferentes avançam em paralelo.</li>
+    <li>Nenhuma atualização confirmada pode ser perdida.</li>
+    <li>Todo I/O recebe <code>context.Context</code> e respeita cancelamento.</li>
+    <li>Falha transitória distinguível de falha permanente.</li>
+  </ul>
+
+  <h2>2. O que foi construído</h2>
+  <table>
+    <thead><tr><th>Arquivo</th><th>Conteúdo</th></tr></thead>
+    <tbody>
+      <tr><td><code>internal/application/ports.go</code></td><td>As interfaces dos repositórios e os erros que os casos de uso enxergam</td></tr>
+      <tr><td><code>internal/infra/postgres/tx.go</code></td><td><code>TxManager</code>: abre, confirma ou desfaz a transação</td></tr>
+      <tr><td><code>internal/infra/postgres/errors.go</code></td><td>Traduz erro do PostgreSQL para erro de aplicação</td></tr>
+      <tr><td><code>wallet_repository.go</code></td><td>Carteira: inserir, ler, ler com lock, atualizar saldo</td></tr>
+      <tr><td><code>wager_transaction_repository.go</code></td><td>Transação: inserir, atualizar, buscar por ID, por ID externo e por chave</td></tr>
+      <tr><td><code>ledger_repository.go</code>, <code>outbox_repository.go</code></td><td>Só inserção</td></tr>
+      <tr><td><code>internal/testdb/testdb.go</code></td><td>Banco de teste: um schema migrado por teste</td></tr>
+    </tbody>
+  </table>
+
+  <h2>3. Ports: a interface fica com quem usa</h2>
+<pre><code>// internal/application/ports.go
+type WalletRepository interface {
+    Insert(ctx context.Context, wallet *domain.Wallet) error
+    Get(ctx context.Context, id string) (*domain.Wallet, error)
+    GetForUpdate(ctx context.Context, id string) (*domain.Wallet, error)
+    UpdateBalance(ctx context.Context, wallet *domain.Wallet) error
+}</code></pre>
+  <p>A interface está no pacote <code>application</code>, que é quem <strong>consome</strong> o repositório. A implementação está em <code>infra/postgres</code>. Assim <code>application</code> não importa nada de banco, e a regra de dependência do desafio se mantém.</p>
+  <p>Em Go a implementação não declara que implementa. <code>*postgres.WalletRepository</code> satisfaz a interface só por ter os mesmos métodos. Em C# seria <code>class WalletRepository : IWalletRepository</code>; aqui não existe essa linha.</p>
+  <p>Quem liga as duas pontas é o Fx:</p>
+<pre><code>fx.Annotate(NewWalletRepository, fx.As(new(application.WalletRepository)))</code></pre>
+  <p><code>fx.As</code> registra o resultado do construtor <strong>como a interface</strong>. É o <code>services.AddScoped&lt;IWalletRepository, WalletRepository&gt;()</code> do C#. Um caso de uso vai pedir <code>application.WalletRepository</code> e receber a implementação do Postgres sem conhecê-la.</p>
+
+  <h2>4. A transação viaja no context</h2>
+<pre><code>func (m *TxManager) WithinTx(ctx context.Context, fn func(ctx context.Context) error) error {
+    if _, ok := ctx.Value(txContextKey{}).(pgx.Tx); ok {
+        return fn(ctx)                      // já existe transação: entra nela
+    }
+
+    tx, err := m.pool.Begin(ctx)
+    if err != nil {
+        return translate(err)
+    }
+    defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+
+    if err := fn(context.WithValue(ctx, txContextKey{}, tx)); err != nil {
+        return err                          // o defer faz o rollback
+    }
+    return translate(tx.Commit(ctx))
+}</code></pre>
+  <ol class="flow">
+    <li><code>Begin</code> pega uma conexão do pool e abre a transação.</li>
+    <li><code>context.WithValue</code> cria um novo <code>ctx</code> que carrega a transação.</li>
+    <li>A função do caso de uso recebe esse <code>ctx</code> e o repassa a cada repositório.</li>
+    <li>Cada repositório procura a transação no <code>ctx</code>. Achou: usa ela. Não achou: usa o pool.</li>
+    <li>Retornou <code>nil</code>: commit. Retornou erro: rollback.</li>
+  </ol>
+<pre><code>func querierFrom(ctx context.Context, pool *pgxpool.Pool) querier {
+    if tx, ok := ctx.Value(txContextKey{}).(pgx.Tx); ok {
+        return tx
+    }
+    return pool
+}</code></pre>
+  <p>O caso de uso não vê <code>pgx.Tx</code> em lugar nenhum. Ele só escreve:</p>
+<pre><code>err := txManager.WithinTx(ctx, func(ctx context.Context) error {
+    wallet, err := wallets.GetForUpdate(ctx, walletID)
+    // ... regra do domínio ...
+    if err := wagers.Insert(ctx, tx); err != nil { return err }
+    if err := wallets.UpdateBalance(ctx, wallet); err != nil { return err }
+    return ledger.Insert(ctx, *entry)
+})</code></pre>
+  <p>É o papel do <code>TransactionScope</code> do C# ou do <code>@Transactional</code>, feito com um parâmetro explícito em vez de estado escondido na thread.</p>
+
+  <h3>Detalhes do WithinTx</h3>
+  <table>
+    <thead><tr><th>Trecho</th><th>Por quê</th></tr></thead>
+    <tbody>
+      <tr><td><code>txContextKey struct{}</code></td><td>A chave do <code>context</code> é um tipo privado do pacote. Nenhum outro pacote consegue ler ou sobrescrever o valor</td></tr>
+      <tr><td><code>ctx.Value(...).(pgx.Tx)</code></td><td>Type assertion: <code>Value</code> devolve <code>any</code>; a forma com <code>, ok</code> não dá panic se o valor não existir</td></tr>
+      <tr><td><code>defer tx.Rollback(...)</code></td><td>Roda em qualquer saída, inclusive panic. Depois de um commit não faz nada</td></tr>
+      <tr><td><code>context.WithoutCancel(ctx)</code></td><td>Se o <code>ctx</code> foi cancelado, o rollback com ele também falharia. Este mantém os valores e remove o cancelamento</td></tr>
+      <tr><td>Interface <code>querier</code></td><td>Pool e transação têm os mesmos métodos <code>Exec</code>, <code>Query</code> e <code>QueryRow</code>. O repositório depende só deles</td></tr>
+    </tbody>
+  </table>
+
+  <h2>5. O lock por carteira</h2>
+<pre><code>SELECT id::text, player_id, currency, balance_minor, version, created_at, updated_at
+  FROM wallets
+ WHERE id = $1
+   FOR UPDATE</code></pre>
+  <p><code>FOR UPDATE</code> trava <strong>a linha</strong> até o fim da transação. Outra transação que pedir a mesma linha com <code>FOR UPDATE</code> fica parada esperando. Quando a primeira termina, a segunda lê o saldo já atualizado.</p>
+  <table>
+    <thead><tr><th>Instante</th><th>Instância A (aposta de 80)</th><th>Instância B (aposta de 80)</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td><code>GetForUpdate</code>: lê saldo 100</td><td></td></tr>
+      <tr><td>2</td><td></td><td><code>GetForUpdate</code>: <strong>espera</strong></td></tr>
+      <tr><td>3</td><td>Debita, grava saldo 20, commit</td><td></td></tr>
+      <tr><td>4</td><td></td><td>Lê saldo <strong>20</strong></td></tr>
+      <tr><td>5</td><td></td><td>Domínio rejeita: <code>INSUFFICIENT_FUNDS</code></td></tr>
+    </tbody>
+  </table>
+  <p>Sem o lock, as duas leriam 100 e as duas gravariam 20: uma aposta sumiria do saldo. Esse é o <em>lost update</em>.</p>
+  <p>O lock é da linha, não da tabela. Uma aposta em outra carteira não espera ninguém.</p>
+
+  <h3>Duas proteções extras</h3>
+<pre><code>UPDATE wallets
+   SET balance_minor = $2, version = $3, updated_at = $4
+ WHERE id = $1 AND version = $3 - 1</code></pre>
+  <ul>
+    <li><strong>Guarda de versão.</strong> O <code>UPDATE</code> só acerta a linha se a versão no banco for a anterior à nova. Se alguém gravou sem o lock, nenhuma linha é afetada e o repositório devolve <code>ErrConcurrentUpdate</code>.</li>
+    <li><strong><code>GetForUpdate</code> fora de transação retorna erro.</strong> Sem transação o lock seria solto no mesmo instante.</li>
+  </ul>
+  <p>Com o <code>CHECK (balance_minor &gt;= 0)</code> da spec 04, são três camadas contra saldo errado: lock, guarda de versão e constraint.</p>
+
+  <h2>6. SQL e mapeamento</h2>
+  <p>Sem ORM. Cada repositório escreve o SQL e converte as colunas na mão.</p>
+<pre><code>err := row.Scan(&amp;id, &amp;playerID, &amp;currency, &amp;balanceMinor, &amp;version, &amp;createdAt, &amp;updatedAt)
+if errors.Is(err, pgx.ErrNoRows) {
+    return nil, application.ErrWalletNotFound
+}
+balance, err := domain.MoneyFromMinorUnits(balanceMinor, currency)
+return domain.RehydrateWallet(id, playerID, balance, version, createdAt.UTC(), updatedAt.UTC())</code></pre>
+  <ul>
+    <li><code>Scan</code> recebe ponteiros (<code>&amp;id</code>) e preenche as variáveis, na ordem das colunas do <code>SELECT</code>.</li>
+    <li>A leitura termina em <code>RehydrateWallet</code>, a função de reidratação da spec 03: restaura o estado sem aplicar regra de criação.</li>
+    <li>Parâmetros são <code>$1</code>, <code>$2</code>…, nunca concatenação de string. É o que evita SQL injection.</li>
+  </ul>
+  <table>
+    <thead><tr><th>No domínio</th><th>No banco</th><th>Conversão</th></tr></thead>
+    <tbody>
+      <tr><td><code>Money</code></td><td><code>BIGINT</code> + <code>CHAR(3)</code></td><td><code>MinorUnits()</code> / <code>MoneyFromMinorUnits</code></td></tr>
+      <tr><td>Campo opcional vazio (<code>""</code>)</td><td><code>NULL</code></td><td><code>NULLIF($8, '')</code> na escrita, <code>COALESCE(col, '')</code> na leitura</td></tr>
+      <tr><td>Saldo resultante não observado</td><td><code>NULL</code></td><td>Ponteiro <code>*int64</code>: <code>nil</code> vira <code>NULL</code></td></tr>
+      <tr><td><code>string</code> com UUID</td><td><code>UUID</code></td><td><code>id::text</code> na leitura</td></tr>
+    </tbody>
+  </table>
+  <div class="note">
+    <p><strong>Ponteiro como "pode ser nulo".</strong> <code>int64</code> não tem valor nulo: o zero é <code>0</code>. Para representar ausência usa-se <code>*int64</code>, que pode ser <code>nil</code>. É o <code>long?</code> do C#.</p>
+  </div>
+
+  <h2>7. Tradução de erros</h2>
+  <p>O caso de uso não pode depender de códigos do PostgreSQL. <code>translate</code> converte cada erro em um erro de <code>application</code>:</p>
+  <table>
+    <thead><tr><th>Do PostgreSQL</th><th>Vira</th><th>Tipo</th></tr></thead>
+    <tbody>
+      <tr><td><code>23505</code> em <code>wallets_player_currency_key</code></td><td><code>ErrWalletAlreadyExists</code></td><td>Permanente</td></tr>
+      <tr><td><code>23505</code> em <code>wager_transactions_external_key</code></td><td><code>ErrDuplicateExternalTransaction</code></td><td>Permanente</td></tr>
+      <tr><td><code>23505</code> em <code>wager_transactions_idempotency_key</code></td><td><code>ErrDuplicateIdempotencyKey</code></td><td>Permanente</td></tr>
+      <tr><td>Outras da classe <code>23</code></td><td><code>ErrInvariantViolation</code></td><td>Permanente (é bug)</td></tr>
+      <tr><td><code>40001</code>, <code>40P01</code>, classes <code>08</code>, <code>53</code>, <code>57</code>, erro de rede</td><td><code>ErrUnavailable</code></td><td><strong>Transitório</strong></td></tr>
+    </tbody>
+  </table>
+  <p>É aqui que os nomes explícitos das constraints da spec 04 são usados: o mesmo código <code>23505</code> vira erros diferentes conforme a constraint violada.</p>
+<pre><code>return fmt.Errorf("%w: %w", application.ErrDuplicateIdempotencyKey, pgErr)</code></pre>
+  <p>Dois <code>%w</code> encadeiam os dois erros. <code>errors.Is(err, application.ErrDuplicateIdempotencyKey)</code> é verdadeiro, e o erro original do Postgres continua acessível para o log.</p>
+  <div class="warn">
+    <p><strong>Transitório × permanente.</strong> Transitório: repetir a mesma chamada mais tarde pode funcionar (banco reiniciando, deadlock). Vai virar <code>503</code> no HTTP e reentrega no SQS. Permanente: repetir dá o mesmo resultado. Essa distinção é exigida pelo desafio e decide o que vai para a DLQ.</p>
+  </div>
+  <p>Depois de uma violação de constraint, o PostgreSQL marca a transação como abortada: qualquer comando seguinte falha. Por isso o caso de uso retorna o erro em vez de tentar continuar.</p>
+
+  <h2>8. Testes</h2>
+  <p>O pacote <code>testdb</code> cria um schema novo para cada teste, aplica as migrations nele e apaga tudo no fim. Os testes rodam em paralelo com o banco de desenvolvimento sem interferir.</p>
+<pre><code>config.ConnConfig.RuntimeParams["search_path"] = schema</code></pre>
+  <p>Toda conexão do pool de teste já nasce apontando para o schema descartável.</p>
+  <h3>O teste do lock</h3>
+<pre><code>locked := make(chan struct{})
+release := make(chan struct{})
+go func() {
+    holderDone &lt;- f.tx.WithinTx(ctx, func(ctx context.Context) error {
+        f.wallets.GetForUpdate(ctx, id(1))
+        close(locked)      // avisa: estou com o lock
+        &lt;-release          // segura até mandarem soltar
+        return nil
+    })
+}()
+&lt;-locked</code></pre>
+  <ul>
+    <li><code>go func() { ... }()</code> inicia uma goroutine: a função roda em paralelo.</li>
+    <li>Um <strong>channel</strong> é um canal de comunicação entre goroutines. <code>&lt;-locked</code> bloqueia até alguém enviar ou fechar o canal.</li>
+    <li><code>close(locked)</code> libera todos que estão esperando. Canais de <code>struct{}</code> servem só como sinal, sem dado.</li>
+  </ul>
+  <p>Com o lock preso, o teste tenta travar a mesma carteira com prazo de 300 ms e espera <code>context.DeadlineExceeded</code>. Isso prova duas coisas de uma vez: a segunda transação espera, e o cancelamento do <code>context</code> interrompe a query.</p>
+  <h3>O teste de concorrência</h3>
+<pre><code>var wg sync.WaitGroup
+for n := range bets {
+    wg.Go(func() { /* uma aposta de 1.00 */ })
+}
+wg.Wait()</code></pre>
+  <p><code>sync.WaitGroup</code> espera um grupo de goroutines terminar: é o <code>Task.WhenAll</code>. Vinte apostas de 1.00 disputam uma carteira de 20.00.</p>
+
+  <h2>9. Como foi verificado</h2>
+  <table>
+    <thead><tr><th>Verificação</th><th>Resultado</th></tr></thead>
+    <tbody>
+      <tr><td>Erro dentro de <code>WithinTx</code></td><td>Carteira, transação, ledger e outbox ficam com 0 linhas; com sucesso, 1 em cada</td></tr>
+      <tr><td>Mesma carteira travada</td><td>Segunda transação espera e é cortada pelo prazo; outra carteira trava sem esperar</td></tr>
+      <tr><td>20 apostas simultâneas de 1.00 sobre 20.00</td><td>Saldo 0.00, versão 21, 20 lançamentos; a 21ª é rejeitada</td></tr>
+      <tr><td>Gravação sem lock</td><td><code>ErrConcurrentUpdate</code></td></tr>
+      <tr><td>Ida e volta de <code>Money</code></td><td>Valor e moeda idênticos, inclusive no maior saldo representável</td></tr>
+      <tr><td><code>go test -race</code> (em container, 3 repetições)</td><td>Passou</td></tr>
+      <tr><td>Cobertura do pacote <code>postgres</code></td><td>83,6%</td></tr>
+    </tbody>
+  </table>
+  <p>O teste de concorrência roda dentro de <strong>um</strong> processo, com várias conexões. A prova com três processos independentes, exigida pelo desafio, fica na spec 15.</p>
+
+  <h2>10. Uma correção no schema</h2>
+  <p>Ao escrever o repositório apareceu um furo da spec 04: o saldo resultante tinha só a coluna de valor. Em uma rejeição por <code>CURRENCY_MISMATCH</code>, o saldo devolvido ao provedor está na moeda da carteira, que é diferente da moeda da transação. Sem a moeda gravada, um replay devolveria o saldo com a moeda errada.</p>
+  <p>A coluna <code>result_balance_currency</code> foi acrescentada, com um <code>CHECK</code> que exige as duas colunas juntas. O teste de ida e volta cobre exatamente esse caso.</p>
+
+  <h2>11. Perguntas de revisão</h2>
+  <dl class="qa">
+    <dt>Como um repositório sabe que está dentro de uma transação?</dt>
+    <dd>Ele procura a transação no <code>context</code>. O <code>TxManager</code> a colocou lá com <code>context.WithValue</code>.</dd>
+
+    <dt>Por que a interface <code>WalletRepository</code> fica em <code>application</code> e não em <code>postgres</code>?</dt>
+    <dd>Porque quem usa define o contrato. Assim <code>application</code> não importa nada de banco.</dd>
+
+    <dt>O que <code>FOR UPDATE</code> trava, e até quando?</dt>
+    <dd>As linhas retornadas pelo <code>SELECT</code>, até o commit ou rollback da transação.</dd>
+
+    <dt>O que é lost update e como é evitado aqui?</dt>
+    <dd>Duas transações leem o mesmo saldo e uma sobrescreve a outra. O lock faz a segunda ler só depois do commit da primeira.</dd>
+
+    <dt>Para que serve a guarda de versão se já existe o lock?</dt>
+    <dd>Para transformar um uso errado (gravar sem lock) em erro, em vez de corromper o saldo em silêncio.</dd>
+
+    <dt>Por que o rollback usa <code>context.WithoutCancel</code>?</dt>
+    <dd>Se o <code>ctx</code> original foi cancelado, o rollback feito com ele também seria cancelado.</dd>
+
+    <dt>Qual a diferença entre <code>ErrUnavailable</code> e <code>ErrInvariantViolation</code>?</dt>
+    <dd>O primeiro é transitório: vale tentar de novo. O segundo é permanente: o banco recusou algo que o domínio não deveria ter produzido.</dd>
+
+    <dt>O que <code>fx.As</code> faz?</dt>
+    <dd>Registra o resultado de um construtor como uma interface, para que os consumidores peçam a interface e não o tipo concreto.</dd>
+  </dl>
+
+  <h3>Ordem de leitura do código</h3>
+  <ol>
+    <li><code>internal/application/ports.go</code></li>
+    <li><code>internal/infra/postgres/tx.go</code></li>
+    <li><code>wallet_repository.go</code></li>
+    <li><code>errors.go</code> e <code>errors_test.go</code></li>
+    <li><code>wager_transaction_repository.go</code></li>
+    <li><code>repositories_test.go</code>: comece por <code>applyBet</code>, que é o caminho de escrita completo de uma aposta</li>
   </ol>
 </section>
 
