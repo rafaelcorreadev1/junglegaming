@@ -2,9 +2,11 @@ package postgres
 
 import (
 	"context"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"wagering-service/internal/application"
 	"wagering-service/internal/domain"
 )
 
@@ -27,4 +29,56 @@ func (r *LedgerRepository) Insert(ctx context.Context, entry domain.LedgerEntry)
 		entry.BalanceBefore().MinorUnits(), entry.BalanceAfter().MinorUnits(), entry.CreatedAt(),
 	)
 	return translate(err)
+}
+
+func (r *LedgerRepository) ListByWallet(ctx context.Context, walletID string, afterSequence int64, limit int) ([]application.LedgerRecord, error) {
+	rows, err := querierFrom(ctx, r.pool).Query(ctx, `
+		SELECT sequence, id::text, wallet_id::text, transaction_id::text, direction, amount_minor, currency,
+		       balance_before_minor, balance_after_minor, created_at
+		  FROM wallet_ledger_entries
+		 WHERE wallet_id = $1 AND sequence > $2
+		 ORDER BY sequence
+		 LIMIT $3`,
+		walletID, afterSequence, limit,
+	)
+	if err != nil {
+		return nil, translate(err)
+	}
+	defer rows.Close()
+
+	var records []application.LedgerRecord
+	for rows.Next() {
+		var (
+			sequence                         int64
+			id, entryWalletID, transactionID string
+			direction, currency              string
+			amount, before, after            int64
+			createdAt                        time.Time
+		)
+		if err := rows.Scan(&sequence, &id, &entryWalletID, &transactionID, &direction, &amount, &currency, &before, &after, &createdAt); err != nil {
+			return nil, translate(err)
+		}
+		entry, err := rehydrateLedgerEntry(id, entryWalletID, transactionID, direction, currency, amount, before, after, createdAt)
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, application.LedgerRecord{Sequence: sequence, Entry: entry})
+	}
+	return records, translate(rows.Err())
+}
+
+func rehydrateLedgerEntry(id, walletID, transactionID, direction, currency string, amount, before, after int64, createdAt time.Time) (domain.LedgerEntry, error) {
+	amountMoney, err := domain.MoneyFromMinorUnits(amount, currency)
+	if err != nil {
+		return domain.LedgerEntry{}, err
+	}
+	beforeMoney, err := domain.MoneyFromMinorUnits(before, currency)
+	if err != nil {
+		return domain.LedgerEntry{}, err
+	}
+	afterMoney, err := domain.MoneyFromMinorUnits(after, currency)
+	if err != nil {
+		return domain.LedgerEntry{}, err
+	}
+	return domain.NewLedgerEntry(id, walletID, transactionID, domain.LedgerDirection(direction), amountMoney, beforeMoney, afterMoney, createdAt.UTC())
 }

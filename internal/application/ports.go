@@ -47,8 +47,16 @@ type WagerTransactionRepository interface {
 	GetByIdempotencyKey(ctx context.Context, providerID, idempotencyKey string) (*domain.WagerTransaction, error)
 }
 
+// LedgerRecord pairs an entry with its insertion order, which exists only in storage.
+type LedgerRecord struct {
+	Sequence int64
+	Entry    domain.LedgerEntry
+}
+
 type LedgerRepository interface {
 	Insert(ctx context.Context, entry domain.LedgerEntry) error
+	// ListByWallet returns up to limit records with a sequence greater than afterSequence, oldest first.
+	ListByWallet(ctx context.Context, walletID string, afterSequence int64, limit int) ([]LedgerRecord, error)
 }
 
 type OutboxMessage struct {
@@ -61,4 +69,12 @@ type OutboxMessage struct {
 
 type OutboxRepository interface {
 	Append(ctx context.Context, message OutboxMessage) error
+}
+
+type Clock interface {
+	Now() time.Time
+}
+
+type IDGenerator interface {
+	NewID() string
 }

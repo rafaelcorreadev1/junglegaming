@@ -44,7 +44,7 @@ Se o processo morrer entre 1 e 2, o evento continua no banco e outra instância 
 
 ## Entregáveis
 
-- `internal/domain/events.go`
+- `internal/domain/events.go` (já entregue na spec 06, junto com `OutboxRepository.Append`)
 - `internal/application/publish_outbox.go` + worker
 - `internal/infra/sqs/publisher.go`
 - Fila de saída no script do LocalStack

@@ -12,12 +12,14 @@ import (
 	"github.com/go-chi/chi/v5"
 	"go.uber.org/fx"
 
+	"wagering-service/internal/application"
 	"wagering-service/internal/config"
 )
 
 var Module = fx.Module("httpapi",
 	fx.Provide(
 		NewHealthHandler,
+		NewWalletHandler,
 		NewRouter,
 		NewServer,
 	),
@@ -25,10 +27,16 @@ var Module = fx.Module("httpapi",
 	fx.Invoke(func(*http.Server) {}),
 )
 
-func NewRouter(health *HealthHandler) http.Handler {
+func NewRouter(health *HealthHandler, wallets *WalletHandler, ids application.IDGenerator, logger *slog.Logger) http.Handler {
 	router := chi.NewRouter()
+	router.Use(correlationID(ids), recoverPanic(logger))
+
 	router.Get("/health/live", health.Live)
 	router.Get("/health/ready", health.Ready)
+
+	router.Post("/wallets", wallets.Open)
+	router.Get("/wallets/{walletId}", wallets.Get)
+	router.Get("/wallets/{walletId}/ledger", wallets.Ledger)
 	return router
 }
 
