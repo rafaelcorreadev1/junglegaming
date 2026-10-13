@@ -1,0 +1,641 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Guia de estudo — Desafio Backend Go</title>
+<style>
+  @page {
+    size: A4;
+    margin: 20mm 18mm 20mm 18mm;
+    @bottom-center {
+      content: counter(page);
+      font-family: "Segoe UI", Arial, sans-serif;
+      font-size: 8.5pt;
+      color: #6b7280;
+    }
+  }
+  @page :first {
+    @bottom-center { content: none; }
+  }
+
+  :root {
+    --ink: #1b2430;
+    --muted: #5b6675;
+    --line: #d9dee5;
+    --accent: #0b6b74;
+    --accent-soft: #e6f2f3;
+    --code-bg: #f4f6f8;
+    --warn-bg: #fff6e0;
+    --warn-line: #d99a00;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    font-family: "Segoe UI", Arial, sans-serif;
+    font-size: 10.5pt;
+    line-height: 1.5;
+    color: var(--ink);
+    background: #fff;
+  }
+
+  h1, h2, h3 { line-height: 1.25; break-after: avoid; }
+  h1 { font-size: 21pt; margin: 0 0 4mm; }
+  h2 { font-size: 13.5pt; margin: 8mm 0 2.5mm; color: var(--accent); }
+  h3 { font-size: 11pt; margin: 5mm 0 1.5mm; }
+  p { margin: 0 0 2.5mm; }
+  ul, ol { margin: 0 0 2.5mm; padding-left: 5.5mm; }
+  li { margin-bottom: 1mm; }
+
+  code, pre { font-family: Consolas, "Courier New", monospace; }
+  code {
+    font-size: 9.2pt;
+    background: var(--code-bg);
+    padding: 0.2mm 1mm;
+    border-radius: 1mm;
+  }
+  pre {
+    font-size: 8.8pt;
+    line-height: 1.42;
+    background: var(--code-bg);
+    border-left: 1mm solid var(--accent);
+    padding: 3mm 4mm;
+    margin: 0 0 3.5mm;
+    white-space: pre-wrap;
+    break-inside: avoid;
+  }
+  pre code { background: none; padding: 0; font-size: inherit; }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 0 0 3.5mm;
+    font-size: 9.6pt;
+    break-inside: avoid;
+  }
+  th, td {
+    text-align: left;
+    vertical-align: top;
+    padding: 1.6mm 2.2mm;
+    border-bottom: 0.3mm solid var(--line);
+  }
+  th {
+    font-size: 8.6pt;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: var(--muted);
+    border-bottom: 0.5mm solid var(--ink);
+  }
+
+  .cover {
+    height: 250mm;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    break-after: page;
+  }
+  .cover .kicker {
+    font-size: 10pt;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 4mm;
+  }
+  .cover h1 { font-size: 30pt; margin-bottom: 5mm; }
+  .cover .sub { font-size: 12.5pt; color: var(--muted); max-width: 135mm; }
+  .cover .meta {
+    margin-top: 16mm;
+    padding-top: 4mm;
+    border-top: 0.5mm solid var(--ink);
+    font-size: 9.5pt;
+    color: var(--muted);
+  }
+
+  .chapter { break-before: page; }
+  .chapter-label {
+    font-size: 9pt;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 1.5mm;
+  }
+  .lead { font-size: 11.5pt; color: var(--muted); margin-bottom: 5mm; }
+
+  .note, .warn {
+    padding: 3mm 4mm;
+    margin: 0 0 3.5mm;
+    border-radius: 1mm;
+    break-inside: avoid;
+  }
+  .note { background: var(--accent-soft); border-left: 1mm solid var(--accent); }
+  .warn { background: var(--warn-bg); border-left: 1mm solid var(--warn-line); }
+  .note p:last-child, .warn p:last-child { margin-bottom: 0; }
+
+  .status { font-weight: 600; white-space: nowrap; }
+  .status.done { color: var(--accent); }
+  .status.todo { color: var(--muted); font-weight: 400; }
+
+  .qa dt { font-weight: 600; margin-top: 2.5mm; break-after: avoid; }
+  .qa dd { margin: 0.8mm 0 0 0; color: var(--muted); }
+
+  .flow { counter-reset: step; list-style: none; padding-left: 0; }
+  .flow li {
+    counter-increment: step;
+    position: relative;
+    padding-left: 9mm;
+    margin-bottom: 1.8mm;
+  }
+  .flow li::before {
+    content: counter(step);
+    position: absolute;
+    left: 0;
+    top: 0.3mm;
+    width: 5.5mm;
+    height: 5.5mm;
+    border-radius: 50%;
+    background: var(--accent);
+    color: #fff;
+    font-size: 8.5pt;
+    font-weight: 600;
+    text-align: center;
+    line-height: 5.5mm;
+  }
+</style>
+</head>
+<body>
+
+<section class="cover">
+  <div class="kicker">Guia de estudo</div>
+  <h1>Desafio Backend Go<br>Processamento Distribuído de Apostas</h1>
+  <p class="sub">O que foi construído em cada spec, por que foi feito assim e quais conceitos de Go aparecem, para quem vem de C#, Python e TypeScript.</p>
+  <div class="meta">
+    Repositório: github.com/rafaelcorreadev1/junglegaming<br>
+    Atualizado até a spec 02 · 13/10/2026
+  </div>
+</section>
+
+<section>
+  <h1>Como usar este guia</h1>
+  <p>Cada spec concluída e testada vira um capítulo. Todos os capítulos seguem a mesma ordem:</p>
+  <ol>
+    <li><strong>O que a spec pedia</strong> — o requisito do desafio.</li>
+    <li><strong>O que foi construído</strong> — os arquivos e o papel de cada um.</li>
+    <li><strong>Como funciona</strong> — o fluxo, passo a passo.</li>
+    <li><strong>Conceitos de Go</strong> — o que é novo, comparado com C# e TypeScript.</li>
+    <li><strong>Decisões</strong> — as escolhas feitas e o motivo.</li>
+    <li><strong>Como foi verificado</strong> — o que foi executado e o resultado.</li>
+    <li><strong>Perguntas de revisão</strong> — para testar se você entendeu.</li>
+  </ol>
+  <p>Leia com o código aberto ao lado. Os trechos aqui são recortes; o arquivo completo está no caminho indicado.</p>
+
+  <h2>Progresso</h2>
+  <table>
+    <thead><tr><th>#</th><th>Spec</th><th>Status</th></tr></thead>
+    <tbody>
+      <tr><td>01</td><td>Bootstrap: módulo Go, Fx, config, Docker Compose</td><td class="status done">Concluída</td></tr>
+      <tr><td>02</td><td>Money</td><td class="status done">Concluída</td></tr>
+      <tr><td>03</td><td>Domínio: Wallet, Ledger, WagerTransaction</td><td class="status todo">A fazer</td></tr>
+      <tr><td>04</td><td>Schema e migrations</td><td class="status todo">A fazer</td></tr>
+      <tr><td>05</td><td>Persistência e transação SQL</td><td class="status todo">A fazer</td></tr>
+      <tr><td>06</td><td>Carteira: abertura, leitura, ledger paginado</td><td class="status todo">A fazer</td></tr>
+      <tr><td>07</td><td>Operação: BET / WIN / LOSS e idempotência</td><td class="status todo">A fazer</td></tr>
+      <tr><td>08</td><td>Reversões e referências pendentes</td><td class="status todo">A fazer</td></tr>
+      <tr><td>09</td><td>Autenticação e autorização</td><td class="status todo">A fazer</td></tr>
+      <tr><td>10</td><td>Outbox e eventos</td><td class="status todo">A fazer</td></tr>
+      <tr><td>11</td><td>Consumidor SQS, inbox e DLQ</td><td class="status todo">A fazer</td></tr>
+      <tr><td>12</td><td>Reconciliação</td><td class="status todo">A fazer</td></tr>
+      <tr><td>13</td><td>Observabilidade</td><td class="status todo">A fazer</td></tr>
+      <tr><td>14</td><td>Ciclo de vida Fx e shutdown</td><td class="status todo">A fazer</td></tr>
+      <tr><td>15</td><td>Testes de integração, concorrência e recuperação</td><td class="status todo">A fazer</td></tr>
+      <tr><td>16</td><td>Documentação e entrega</td><td class="status todo">A fazer</td></tr>
+    </tbody>
+  </table>
+
+  <h2>O desafio em um parágrafo</h2>
+  <p>Um serviço que movimenta carteiras de jogadores a partir de operações enviadas por provedores de jogos: aposta (<code>BET</code>), ganho (<code>WIN</code>), perda (<code>LOSS</code>), devolução (<code>REFUND</code>) e estorno (<code>ROLLBACK</code>). As operações chegam por HTTP e por fila (SQS), e o resultado financeiro precisa ser o mesmo nos dois caminhos, mesmo com várias instâncias rodando e com falhas no meio do processamento.</p>
+
+  <h2>Mapa mental: Go para quem vem de C# e TypeScript</h2>
+  <table>
+    <thead><tr><th>Em Go</th><th>O equivalente que você conhece</th></tr></thead>
+    <tbody>
+      <tr><td><code>go.mod</code> / <code>go.sum</code></td><td><code>.csproj</code> / <code>package.json</code> + lockfile</td></tr>
+      <tr><td>Pasta <code>internal/</code></td><td><code>internal</code> do C#: o compilador impede import de fora do módulo</td></tr>
+      <tr><td>Nome com maiúscula</td><td><code>public</code>; minúscula é privado ao pacote</td></tr>
+      <tr><td><code>struct</code> + função <code>NewX</code></td><td>Classe + construtor</td></tr>
+      <tr><td><code>interface</code> implícita</td><td>Interface estrutural do TypeScript: não existe <code>implements</code></td></tr>
+      <tr><td><code>error</code> como retorno</td><td>Exceção, só que retornada e checada com <code>if err != nil</code></td></tr>
+      <tr><td><code>context.Context</code></td><td><code>CancellationToken</code></td></tr>
+      <tr><td><code>defer</code></td><td><code>finally</code> / <code>using</code></td></tr>
+      <tr><td>Goroutine (<code>go f()</code>)</td><td><code>Task.Run</code></td></tr>
+      <tr><td>Uber Fx</td><td><code>IServiceCollection</code> / modules do NestJS</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ============================ SPEC 01 ============================ -->
+<section class="chapter">
+  <div class="chapter-label">Spec 01</div>
+  <h1>Bootstrap: módulo Go, Fx, config e Docker Compose</h1>
+  <p class="lead">Um processo Go que sobe, valida a configuração, conecta no Postgres e responde dois endpoints de saúde. Ainda não há nenhuma regra de negócio.</p>
+
+  <h2>1. O que a spec pedia</h2>
+  <ul>
+    <li>Versão do Go declarada em <code>go.mod</code> e no <code>Dockerfile</code>; dependências versionadas.</li>
+    <li>Composição da aplicação com Uber Fx, com injeção por construtores.</li>
+    <li>Configuração validada na inicialização: o processo não sobe com config inválida.</li>
+    <li>Ambiente local com Docker Compose e um <code>.env.example</code> sem segredos.</li>
+  </ul>
+
+  <h2>2. O que foi construído</h2>
+  <table>
+    <thead><tr><th>Arquivo</th><th>Papel</th></tr></thead>
+    <tbody>
+      <tr><td><code>cmd/app/main.go</code></td><td>Ponto de entrada: carrega a config e entrega o controle ao Fx</td></tr>
+      <tr><td><code>internal/config/config.go</code></td><td>Lê e valida as variáveis de ambiente</td></tr>
+      <tr><td><code>internal/app/app.go</code></td><td>A composição: lista os módulos que formam a aplicação</td></tr>
+      <tr><td><code>internal/infra/observability/logger.go</code></td><td>Logger em JSON</td></tr>
+      <tr><td><code>internal/infra/postgres/pool.go</code></td><td>Pool de conexões com o Postgres</td></tr>
+      <tr><td><code>internal/infra/httpapi/server.go</code></td><td>Rotas e servidor HTTP</td></tr>
+      <tr><td><code>internal/infra/httpapi/health.go</code></td><td>Endpoints <code>/health/live</code> e <code>/health/ready</code></td></tr>
+      <tr><td><code>Dockerfile</code>, <code>docker-compose.yml</code></td><td>Imagem da aplicação e ambiente local</td></tr>
+    </tbody>
+  </table>
+
+  <h2>3. Como funciona</h2>
+  <ol class="flow">
+    <li><code>main</code> lê as variáveis de ambiente e monta a <code>Config</code>.</li>
+    <li>Config inválida: imprime o erro e sai com código 1. Nada mais é criado.</li>
+    <li>O Fx recebe os construtores e descobre a ordem: logger, pool, handler, router, servidor.</li>
+    <li>O Fx executa os <code>OnStart</code>: ping no banco e depois abertura da porta HTTP.</li>
+    <li>O processo fica parado esperando um sinal (<code>SIGTERM</code> ou Ctrl+C).</li>
+    <li>No sinal, o Fx executa os <code>OnStop</code> na ordem inversa: o servidor HTTP para e depois o pool fecha.</li>
+  </ol>
+
+  <h2>4. Conceitos de Go</h2>
+
+  <h3>Erro é valor de retorno</h3>
+  <p>Go não tem exceção. A função que pode falhar devolve o erro como último retorno e quem chama é obrigado a decidir o que fazer com ele.</p>
+<pre><code>cfg, err := config.Load()
+if err != nil {
+    fmt.Fprintln(os.Stderr, err)
+    os.Exit(1)
+}</code></pre>
+
+  <h3>Embrulhar erro com <code>%w</code></h3>
+  <p>O erro original fica guardado dentro do novo, como a <code>InnerException</code> do C#. É o que permite, mais à frente, classificar erros com <code>errors.Is</code>, uma exigência do desafio.</p>
+<pre><code>if err := pool.Ping(ctx); err != nil {
+    return fmt.Errorf("ping postgres: %w", err)
+}</code></pre>
+
+  <h3>Visibilidade pela primeira letra</h3>
+  <p><code>Config</code>, <code>Load</code> e <code>NewPool</code> começam com maiúscula e são públicos. <code>valueOr</code> e <code>writeJSON</code> começam com minúscula e só existem dentro do próprio pacote.</p>
+
+  <h3>Struct, construtor e método</h3>
+  <p>Não há classes. Os dados ficam em uma <code>struct</code>, o construtor é uma função comum chamada <code>NewAlgo</code> por convenção, e o método é uma função com um <em>receiver</em>, que faz o papel do <code>this</code>.</p>
+<pre><code>type HealthHandler struct {
+    pool   *pgxpool.Pool
+    logger *slog.Logger
+}
+
+func NewHealthHandler(pool *pgxpool.Pool, logger *slog.Logger) *HealthHandler {
+    return &amp;HealthHandler{pool: pool, logger: logger}
+}
+
+func (h *HealthHandler) Live(w http.ResponseWriter, _ *http.Request) {
+    writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}</code></pre>
+  <p>O <code>*</code> indica ponteiro (referência ao mesmo objeto) e o <code>&amp;</code> cria esse ponteiro. O <code>_</code> significa "recebo o parâmetro, mas não uso".</p>
+
+  <h3><code>context.Context</code> e <code>defer</code></h3>
+  <p>O <code>context</code> vai sempre como primeiro parâmetro e carrega cancelamento e prazo. No readiness, ele limita o ping a 2 segundos. O <code>defer</code> agenda a linha para o fim da função, com ou sem erro.</p>
+<pre><code>ctx, cancel := context.WithTimeout(r.Context(), readinessTimeout)
+defer cancel()
+
+if err := h.pool.Ping(ctx); err != nil { ... }</code></pre>
+
+  <h3>Goroutine</h3>
+  <p><code>go func() { ... }()</code> inicia uma execução concorrente. O servidor HTTP roda em uma goroutine porque <code>Serve</code> bloqueia até o servidor fechar, e a inicialização precisa continuar.</p>
+
+  <h2>5. Uber Fx</h2>
+  <p>O Fx é o container de injeção de dependência. Você não registra "interface para implementação": entrega as funções construtoras e ele lê as assinaturas.</p>
+<pre><code>func NewRouter(health *HealthHandler) http.Handler</code></pre>
+  <p>O Fx lê isso como: para criar um <code>http.Handler</code>, preciso de um <code>*HealthHandler</code>. Ele procura quem produz esse tipo e chama na ordem certa.</p>
+  <table>
+    <thead><tr><th>Função</th><th>O que faz</th></tr></thead>
+    <tbody>
+      <tr><td><code>fx.Provide(NewX)</code></td><td>Registra um construtor. Só executa se alguém precisar do resultado.</td></tr>
+      <tr><td><code>fx.Invoke(f)</code></td><td>Executa sempre. É o que força a construção do servidor.</td></tr>
+      <tr><td><code>fx.Supply(valor)</code></td><td>Registra um valor pronto, sem construtor. Usado para a <code>Config</code>.</td></tr>
+      <tr><td><code>fx.Module("nome", ...)</code></td><td>Agrupa os registros de um pacote.</td></tr>
+      <tr><td><code>fx.Lifecycle</code></td><td>Onde cada componente registra <code>OnStart</code> e <code>OnStop</code>.</td></tr>
+    </tbody>
+  </table>
+  <p>A composição inteira, em <code>internal/app/app.go</code>:</p>
+<pre><code>func Options(cfg config.Config) fx.Option {
+    return fx.Options(
+        fx.Supply(cfg),
+        fx.StartTimeout(cfg.ShutdownTimeout),
+        fx.StopTimeout(cfg.ShutdownTimeout),
+        fx.WithLogger(...),
+        observability.Module,
+        postgres.Module,
+        httpapi.Module,
+    )
+}</code></pre>
+  <p>E o ciclo de vida do pool, em <code>internal/infra/postgres/pool.go</code>:</p>
+<pre><code>lc.Append(fx.Hook{
+    OnStart: func(ctx context.Context) error {
+        if err := pool.Ping(ctx); err != nil {
+            return fmt.Errorf("ping postgres: %w", err)
+        }
+        return nil
+    },
+    OnStop: func(context.Context) error {
+        pool.Close()
+        return nil
+    },
+})</code></pre>
+  <div class="note">
+    <p><strong>Por que a ordem de parada sai certa sozinha.</strong> O servidor depende do handler, que depende do pool. Então o pool é construído primeiro e registra seu hook primeiro. O Fx executa os <code>OnStop</code> na ordem inversa dos <code>OnStart</code>: o servidor para de receber requisições antes de o pool fechar.</p>
+  </div>
+
+  <h2>6. Decisões</h2>
+  <table>
+    <thead><tr><th>Decisão</th><th>Motivo</th></tr></thead>
+    <tbody>
+      <tr><td>A config devolve todos os erros de uma vez (<code>errors.Join</code>)</td><td>Quem configura o ambiente corrige tudo em uma tentativa</td></tr>
+      <tr><td>A config recebe uma função <code>getenv</code> em vez de chamar <code>os.Getenv</code></td><td>O teste passa um mapa e não altera o ambiente real</td></tr>
+      <tr><td>A config é carregada no <code>main</code>, antes do Fx</td><td>Os timeouts do próprio Fx vêm dela</td></tr>
+      <tr><td>A porta é aberta no <code>OnStart</code>, fora da goroutine</td><td>Porta ocupada vira falha de inicialização, em vez de erro perdido em background</td></tr>
+      <tr><td>O ping no banco fica no <code>OnStart</code></td><td>Criar o pool não abre conexão; só o ping valida o banco</td></tr>
+      <tr><td>Composição em <code>internal/app</code>, fora do <code>main</code></td><td>Permite testar o grafo de dependências sem subir nada</td></tr>
+      <tr><td>Dockerfile em dois estágios, com imagem final <em>distroless</em></td><td>Go gera um binário único; a imagem final não precisa de compilador nem de shell</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Liveness e readiness</h3>
+  <table>
+    <thead><tr><th>Endpoint</th><th>Pergunta que responde</th><th>Verifica</th></tr></thead>
+    <tbody>
+      <tr><td><code>GET /health/live</code></td><td>O processo está de pé?</td><td>Nada externo</td></tr>
+      <tr><td><code>GET /health/ready</code></td><td>Consigo atender requisições?</td><td>Postgres (o SQS entra na spec 10)</td></tr>
+    </tbody>
+  </table>
+  <p>Se o banco cair, o orquestrador para de mandar tráfego (ready falha), mas não reinicia o processo (live continua ok), porque reiniciar não resolveria.</p>
+
+  <h2>7. Testes</h2>
+  <p>O arquivo de teste fica ao lado do código, com sufixo <code>_test.go</code>, e usa só o pacote <code>testing</code> da biblioteca padrão. O formato idiomático é o teste em tabela, equivalente ao <code>[Theory]</code> do xUnit:</p>
+<pre><code>tests := []struct {
+    name    string
+    env     map[string]string
+    wantErr string
+}{
+    {name: "missing database url", env: map[string]string{}, wantErr: "DATABASE_URL is required"},
+    ...
+}
+
+for _, tt := range tests {
+    t.Run(tt.name, func(t *testing.T) {
+        _, err := FromEnv(envFrom(tt.env))
+        ...
+    })
+}</code></pre>
+  <p><code>internal/app/app_test.go</code> usa <code>fx.ValidateApp</code>: confere que todo construtor tem as dependências de que precisa, sem iniciar nada.</p>
+
+  <h2>8. Como foi verificado</h2>
+  <table>
+    <thead><tr><th>Verificação</th><th>Resultado</th></tr></thead>
+    <tbody>
+      <tr><td><code>gofmt -l .</code> e <code>go vet ./...</code></td><td>Sem saída</td></tr>
+      <tr><td><code>go test ./...</code></td><td>Passou</td></tr>
+      <tr><td><code>go test -race ./...</code> (em container Linux)</td><td>Passou</td></tr>
+      <tr><td><code>docker compose up --build</code></td><td><code>/health/live</code> e <code>/health/ready</code> respondem 200</td></tr>
+      <tr><td>Postgres parado</td><td><code>/health/ready</code> 503, <code>/health/live</code> 200</td></tr>
+      <tr><td>Sem <code>DATABASE_URL</code> e com <code>LOG_LEVEL</code> inválido</td><td>Os dois erros impressos, código de saída 1</td></tr>
+      <tr><td><code>docker compose stop app</code></td><td>Servidor para, pool fecha, código de saída 0</td></tr>
+    </tbody>
+  </table>
+  <div class="warn">
+    <p><strong>O <code>-race</code> não roda direto no Windows.</strong> O detector de condição de corrida exige um compilador C, que não vem com o Go no Windows. A saída é executar em container:</p>
+    <p><code>docker run --rm -v "${PWD}:/src" -v wagering-gomod:/go/pkg/mod -w /src golang:1.27 go test -race ./...</code></p>
+  </div>
+
+  <h2>9. Comandos do dia a dia</h2>
+  <table>
+    <thead><tr><th>Comando</th><th>Para quê</th></tr></thead>
+    <tbody>
+      <tr><td><code>go run ./cmd/app</code></td><td>Roda a aplicação (precisa de <code>DATABASE_URL</code>)</td></tr>
+      <tr><td><code>go test ./...</code></td><td>Roda todos os testes; <code>./...</code> é "este diretório e todos abaixo"</td></tr>
+      <tr><td><code>go vet ./...</code></td><td>Análise estática</td></tr>
+      <tr><td><code>gofmt -l .</code></td><td>Lista arquivos fora do padrão de formatação</td></tr>
+      <tr><td><code>go mod tidy</code></td><td>Ajusta <code>go.mod</code> e <code>go.sum</code> ao que o código importa</td></tr>
+      <tr><td><code>docker compose up --build</code></td><td>Sobe Postgres e aplicação</td></tr>
+    </tbody>
+  </table>
+
+  <h2>10. Perguntas de revisão</h2>
+  <dl class="qa">
+    <dt>Por que existe um <code>fx.Invoke(func(*http.Server) {})</code> com corpo vazio?</dt>
+    <dd>Porque o Fx só constrói o que alguém pede. Sem essa linha ninguém pediria o servidor, e ele nunca seria criado nem iniciado.</dd>
+
+    <dt>O que acontece se a porta 8080 já estiver em uso?</dt>
+    <dd>O <code>net.Listen</code> falha dentro do <code>OnStart</code>, o Fx aborta a inicialização e executa os <code>OnStop</code> do que já tinha iniciado (o pool fecha).</dd>
+
+    <dt>Por que o pool é fechado depois do servidor HTTP no shutdown?</dt>
+    <dd>Porque o servidor ainda pode estar terminando requisições que usam o banco. Fechar o pool antes quebraria essas requisições.</dd>
+
+    <dt>Qual a diferença entre <code>fx.Provide</code> e <code>fx.Supply</code>?</dt>
+    <dd><code>Provide</code> registra uma função que cria o valor; <code>Supply</code> registra o valor já pronto.</dd>
+
+    <dt>Por que <code>FromEnv</code> recebe uma função em vez de ler o ambiente diretamente?</dt>
+    <dd>Para o teste controlar as variáveis sem alterar o ambiente do processo, o que também permite rodar testes em paralelo.</dd>
+
+    <dt>Com o banco fora do ar, por que <code>/health/live</code> continua 200?</dt>
+    <dd>Liveness diz se o processo precisa ser reiniciado. Banco fora não se resolve reiniciando a aplicação; quem sinaliza isso é o readiness.</dd>
+  </dl>
+
+  <h3>Ordem de leitura do código</h3>
+  <ol>
+    <li><code>cmd/app/main.go</code></li>
+    <li><code>internal/config/config.go</code> e o teste ao lado</li>
+    <li><code>internal/app/app.go</code></li>
+    <li><code>internal/infra/postgres/pool.go</code></li>
+    <li><code>internal/infra/httpapi/server.go</code> e <code>health.go</code></li>
+  </ol>
+</section>
+
+<!-- ============================ SPEC 02 ============================ -->
+<section class="chapter">
+  <div class="chapter-label">Spec 02</div>
+  <h1>Money</h1>
+  <p class="lead">O tipo que representa dinheiro em todo o sistema: centavos em <code>int64</code> mais a moeda. Nenhum valor monetário passa por ponto flutuante.</p>
+
+  <h2>1. O que a spec pedia</h2>
+  <ul>
+    <li>Value object imutável com valor e moeda.</li>
+    <li>Criação a partir de string decimal, zero por moeda, soma, subtração, negação, comparação e serialização.</li>
+    <li>Proibido <code>float32</code> e <code>float64</code> em parsing, cálculo, serialização e persistência. É critério eliminatório.</li>
+    <li>Escala fixa de duas casas e moeda ISO 4217.</li>
+    <li>Rejeitar vazio, <code>NaN</code>, <code>Infinity</code>, notação científica e casas a mais, sem arredondar.</li>
+    <li>Operações só entre valores da mesma moeda.</li>
+    <li>Tratar overflow no parsing, na soma, na subtração e na negação.</li>
+  </ul>
+
+  <h2>2. Por que não usar float</h2>
+  <p>Ponto flutuante guarda números em base 2, e a maioria das frações decimais não tem representação exata nela. Em qualquer linguagem, <code>0.1 + 0.2</code> resulta em <code>0.30000000000000004</code>. Em um sistema financeiro, esse resíduo vira centavo sobrando ou faltando depois de milhares de operações.</p>
+  <p>A saída é guardar a quantia como inteiro na menor unidade da moeda: <code>25.00</code> vira <code>2500</code> centavos. Inteiros somam e subtraem de forma exata.</p>
+
+  <h2>3. O que foi construído</h2>
+  <table>
+    <thead><tr><th>Arquivo</th><th>Papel</th></tr></thead>
+    <tbody>
+      <tr><td><code>internal/domain/money.go</code></td><td>O tipo <code>Money</code>, seus erros e o parser</td></tr>
+      <tr><td><code>internal/domain/money_test.go</code></td><td>Testes em tabela; 100% das instruções cobertas</td></tr>
+    </tbody>
+  </table>
+  <p>O pacote <code>domain</code> importa só a biblioteca padrão. Essa é a regra do desafio: o domínio não conhece Fx, HTTP, SQS nem banco.</p>
+
+  <h3>A interface pública</h3>
+  <table>
+    <thead><tr><th>Função ou método</th><th>O que faz</th></tr></thead>
+    <tbody>
+      <tr><td><code>ParseMoney("25.00", "BRL")</code></td><td>Cria a partir do contrato externo (string decimal)</td></tr>
+      <tr><td><code>MoneyFromMinorUnits(2500, "BRL")</code></td><td>Cria a partir de centavos; é o caminho de volta do banco</td></tr>
+      <tr><td><code>ZeroMoney("BRL")</code></td><td>Zero na moeda informada</td></tr>
+      <tr><td><code>Add</code>, <code>Sub</code>, <code>Neg</code></td><td>Devolvem um novo <code>Money</code> e um erro</td></tr>
+      <tr><td><code>Cmp</code>, <code>Equal</code></td><td>Comparação; <code>Cmp</code> devolve -1, 0 ou 1</td></tr>
+      <tr><td><code>IsZero</code>, <code>IsPositive</code>, <code>IsNegative</code></td><td>Perguntas que as regras de negócio vão usar</td></tr>
+      <tr><td><code>Amount()</code>, <code>MinorUnits()</code>, <code>Currency()</code></td><td>Leitura: <code>"25.00"</code>, <code>2500</code>, <code>"BRL"</code></td></tr>
+      <tr><td><code>MarshalJSON</code>, <code>UnmarshalJSON</code></td><td>Conversão de e para <code>{"amount":"25.00","currency":"BRL"}</code></td></tr>
+    </tbody>
+  </table>
+
+  <h2>4. Como funciona</h2>
+
+  <h3>Imutabilidade</h3>
+<pre><code>type Money struct {
+    minorUnits int64
+    currency   string
+}</code></pre>
+  <p>Os dois campos começam com minúscula, então nenhum outro pacote consegue alterá-los. Os métodos usam receiver por valor (<code>func (m Money)</code>, sem <code>*</code>): cada chamada trabalha em uma cópia, e o resultado é sempre um <code>Money</code> novo. É o equivalente a um <code>readonly record struct</code> do C#.</p>
+
+  <h3>O parser, passo a passo</h3>
+  <ol class="flow">
+    <li>Separa o sinal <code>-</code>, se houver. O sinal <code>+</code> não é aceito.</li>
+    <li>Divide no ponto: parte inteira e parte decimal.</li>
+    <li>Exige só dígitos de <code>0</code> a <code>9</code> nas duas partes. Isso elimina <code>NaN</code>, <code>Infinity</code>, <code>1e3</code>, espaços e vírgulas de uma vez.</li>
+    <li>Rejeita mais de duas casas decimais. Não há arredondamento.</li>
+    <li>Completa a parte decimal com zeros: <code>"25.5"</code> vira <code>"2550"</code>.</li>
+    <li>Converte dígito a dígito para <code>int64</code>, checando overflow antes de cada multiplicação.</li>
+  </ol>
+  <p>Não se usa <code>strconv.ParseFloat</code> nem nenhuma função de conversão pronta: o parser é uma validação de caracteres seguida de aritmética de inteiros.</p>
+
+  <h3>Overflow</h3>
+  <p>Em Go, somar além do limite de um <code>int64</code> não gera erro: o número "dá a volta" e vira negativo, em silêncio. Por isso a checagem acontece <strong>antes</strong> da operação:</p>
+<pre><code>a, b := m.minorUnits, other.minorUnits
+if (b &gt; 0 &amp;&amp; a &gt; math.MaxInt64-b) || (b &lt; 0 &amp;&amp; a &lt; math.MinInt64-b) {
+    return Money{}, fmt.Errorf("%w: %s + %s", ErrMoneyOverflow, m, other)
+}
+return Money{minorUnits: a + b, currency: m.currency}, nil</code></pre>
+  <p>A leitura é: "se <code>b</code> é positivo e <code>a</code> já está a menos de <code>b</code> do teto, a soma estouraria". A comparação é reescrita de forma que ela própria nunca estoure.</p>
+  <div class="note">
+    <p><strong>O caso da negação.</strong> Um <code>int64</code> vai de -9.223.372.036.854.775.808 a +9.223.372.036.854.775.807: existe um negativo a mais. Negar o menor valor não tem resultado possível, então <code>Neg()</code> devolve erro nesse caso.</p>
+  </div>
+
+  <h3>Erros classificáveis</h3>
+<pre><code>var (
+    ErrInvalidMoney     = errors.New("money is not initialized")
+    ErrInvalidAmount    = errors.New("invalid money amount")
+    ErrInvalidCurrency  = errors.New("invalid currency")
+    ErrCurrencyMismatch = errors.New("currency mismatch")
+    ErrMoneyOverflow    = errors.New("money amount overflow")
+)</code></pre>
+  <p>São os <em>erros sentinela</em>: variáveis públicas que servem de identidade do erro. Quem recebe o erro pergunta qual é com <code>errors.Is</code>, mesmo que ele tenha sido embrulhado com detalhes pelo <code>%w</code>:</p>
+<pre><code>_, err := brl.Add(usd)
+if errors.Is(err, domain.ErrCurrencyMismatch) { ... }</code></pre>
+  <p>Em C# isso seria um <code>catch (CurrencyMismatchException)</code>. Mais à frente, a camada HTTP usa essa classificação para decidir entre 400, 409 e 422.</p>
+
+  <h3>O valor zero de uma struct</h3>
+  <p>Em Go, toda variável nasce com um "valor zero": <code>var m Money</code> é válido para o compilador e contém <code>0</code> centavos e moeda vazia. Não existe <code>null</code> para structs. Como o desafio exige rejeitar valores não inicializados, a moeda vazia é o marcador: <code>IsValid()</code> devolve falso, e toda operação e a serialização devolvem <code>ErrInvalidMoney</code>.</p>
+
+  <h3>JSON</h3>
+  <p>O pacote <code>encoding/json</code> procura dois métodos no tipo. Se existirem, usa-os no lugar do comportamento padrão. É o equivalente a um <code>JsonConverter</code> do C#.</p>
+<pre><code>func (m Money) MarshalJSON() ([]byte, error)      // Money  -&gt; JSON
+func (m *Money) UnmarshalJSON(data []byte) error  // JSON   -&gt; Money</code></pre>
+  <p><code>UnmarshalJSON</code> é o único método com receiver de ponteiro (<code>*Money</code>), porque precisa preencher a variável de quem chamou. Se o conteúdo for inválido, a variável não é alterada.</p>
+  <p>O campo <code>amount</code> é declarado como <code>string</code>. Se o cliente mandar um número JSON (<code>"amount": 25.00</code>, sem aspas), a decodificação falha.</p>
+
+  <h2>5. Decisões</h2>
+  <table>
+    <thead><tr><th>Decisão</th><th>Motivo</th></tr></thead>
+    <tbody>
+      <tr><td><code>int64</code> em centavos, sem biblioteca decimal</td><td>Sem dependência externa; mapeia direto para <code>BIGINT</code> no Postgres</td></tr>
+      <tr><td>Limite: cerca de 92 quatrilhões por valor</td><td>É o teto do <code>int64</code> dividido por 100; fica documentado como limitação</td></tr>
+      <tr><td>Aceita <code>"25"</code>, <code>"25.0"</code> e <code>"25.00"</code>; todas viram <code>"25.00"</code></td><td>São o mesmo valor, sem perda. A forma normalizada é a que entra no hash de idempotência (spec 07)</td></tr>
+      <tr><td>Rejeita <code>"25.000"</code>, mesmo sendo o mesmo valor</td><td>O desafio pede rejeição de escala excedente; aceitar zeros extras abriria exceção à regra</td></tr>
+      <tr><td>Rejeita zeros à esquerda, <code>+</code>, <code>-0.00</code>, <code>.50</code> e <code>25.</code></td><td>Uma única forma de escrever cada valor reduz ambiguidade</td></tr>
+      <tr><td>Só moedas ISO 4217 de duas casas</td><td>A escala é fixa em 2; <code>JPY</code>, sem centavos, ficaria errado</td></tr>
+      <tr><td>Moeda em minúsculas é rejeitada</td><td>Não normalizar em silêncio</td></tr>
+      <tr><td><code>ParseMoney</code> aceita negativo</td><td>Diferenças negativas são serializadas (reconciliação). Proibir negativo em aposta e saldo é regra das entidades, na spec 03</td></tr>
+    </tbody>
+  </table>
+
+  <h2>6. Conceitos de Go</h2>
+  <table>
+    <thead><tr><th>Conceito</th><th>Onde aparece</th><th>Paralelo</th></tr></thead>
+    <tbody>
+      <tr><td>Receiver por valor ou por ponteiro</td><td><code>(m Money)</code> nos métodos; <code>(m *Money)</code> em <code>UnmarshalJSON</code></td><td>Passagem por cópia ou por referência (<code>ref</code>)</td></tr>
+      <tr><td>Valor zero</td><td><code>Money{}</code> é inválido de propósito</td><td><code>default(T)</code> do C#</td></tr>
+      <tr><td>Erro sentinela + <code>errors.Is</code></td><td><code>ErrInvalidAmount</code> e os demais</td><td><code>catch</code> por tipo de exceção</td></tr>
+      <tr><td>Múltiplos retornos</td><td><code>Add</code> devolve <code>(Money, error)</code></td><td>Tupla, ou padrão <code>TryParse</code></td></tr>
+      <tr><td>Struct tags</td><td><code>`json:"amount"`</code></td><td><code>[JsonPropertyName("amount")]</code></td></tr>
+      <tr><td>Conjunto com <code>map[string]struct{}</code></td><td>Lista de moedas aceitas</td><td><code>HashSet&lt;string&gt;</code>; <code>struct{}</code> ocupa zero bytes</td></tr>
+      <tr><td><code>t.Helper()</code></td><td><code>mustMoney</code> nos testes</td><td>Faz a falha apontar para a linha do teste, não para o helper</td></tr>
+    </tbody>
+  </table>
+
+  <h2>7. Como foi verificado</h2>
+  <table>
+    <thead><tr><th>Verificação</th><th>Resultado</th></tr></thead>
+    <tbody>
+      <tr><td><code>go test ./internal/domain/ -cover</code></td><td>Passou; 100% das instruções</td></tr>
+      <tr><td><code>go test -race ./...</code> (em container)</td><td>Passou</td></tr>
+      <tr><td><code>gofmt -l .</code> e <code>go vet ./...</code></td><td>Sem saída</td></tr>
+      <tr><td>Busca por <code>float32</code> e <code>float64</code> nos arquivos <code>.go</code></td><td>Nenhuma ocorrência</td></tr>
+    </tbody>
+  </table>
+  <h3>O que os testes cobrem</h3>
+  <ul>
+    <li><strong>Aceitos:</strong> 12 formas válidas, incluindo os dois extremos do <code>int64</code>.</li>
+    <li><strong>Rejeitados:</strong> 23 entradas inválidas, de <code>NaN</code> a dígitos não ASCII.</li>
+    <li><strong>Overflow:</strong> no parsing, na soma, na subtração e na negação, incluindo os casos de fronteira que <em>não</em> devem estourar.</li>
+    <li><strong>Moedas:</strong> soma, subtração e comparação entre <code>BRL</code> e <code>USD</code> devolvem <code>ErrCurrencyMismatch</code>.</li>
+    <li><strong>Não inicializado:</strong> <code>Money{}</code> é rejeitado em sete operações.</li>
+    <li><strong>JSON:</strong> ida e volta, e oito corpos inválidos.</li>
+  </ul>
+
+  <h2>8. Perguntas de revisão</h2>
+  <dl class="qa">
+    <dt>Por que <code>Add</code> devolve erro, se somar dois inteiros nunca falha em Go?</dt>
+    <dd>Por dois motivos: as moedas podem ser diferentes, e a soma pode passar do limite do <code>int64</code>. Go não avisa quando isso acontece; o valor dá a volta e fica negativo.</dd>
+
+    <dt>Por que <code>"25.000"</code> é rejeitado, se vale o mesmo que <code>"25.00"</code>?</dt>
+    <dd>A escala é fixa em duas casas e o desafio manda rejeitar escala excedente. Aceitar só quando os dígitos extras são zero seria uma exceção difícil de explicar no contrato.</dd>
+
+    <dt>Como o código garante que ninguém altera um <code>Money</code> depois de criado?</dt>
+    <dd>Os campos não são exportados e os métodos têm receiver por valor, então sempre devolvem um <code>Money</code> novo.</dd>
+
+    <dt>O que acontece com <code>var m Money</code> seguido de <code>m.Add(outro)</code>?</dt>
+    <dd>Devolve <code>ErrInvalidMoney</code>. O valor zero da struct tem moeda vazia, e isso é tratado como "não inicializado".</dd>
+
+    <dt>Por que <code>amount</code> é string no JSON, e não número?</dt>
+    <dd>Um número JSON seria lido como ponto flutuante por quase todo parser, inclusive no cliente. Como string, o valor chega exatamente como foi escrito.</dd>
+
+    <dt>Por que <code>ParseMoney</code> aceita <code>"-5.00"</code>, se o desafio proíbe valor negativo nas entradas?</dt>
+    <dd><code>Money</code> também representa diferenças, que podem ser negativas. Quem proíbe negativo em uma aposta ou em um saldo é a entidade que recebe o valor, na spec 03.</dd>
+  </dl>
+</section>
+
+</body>
+</html>
