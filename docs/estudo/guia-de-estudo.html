@@ -171,7 +171,7 @@
   <p class="sub">O que foi construído em cada spec, por que foi feito assim e quais conceitos de Go aparecem, para quem vem de C#, Python e TypeScript.</p>
   <div class="meta">
     Repositório: github.com/rafaelcorreadev1/junglegaming<br>
-    Atualizado até a spec 05 · 13/10/2026
+    Atualizado até a spec 06 · 13/10/2026
   </div>
 </section>
 
@@ -198,7 +198,7 @@
       <tr><td>03</td><td>Domínio: Wallet, Ledger, WagerTransaction</td><td class="status done">Concluída</td></tr>
       <tr><td>04</td><td>Schema e migrations</td><td class="status done">Concluída</td></tr>
       <tr><td>05</td><td>Persistência e transação SQL</td><td class="status done">Concluída</td></tr>
-      <tr><td>06</td><td>Carteira: abertura, leitura, ledger paginado</td><td class="status todo">A fazer</td></tr>
+      <tr><td>06</td><td>Carteira: abertura, leitura, ledger paginado</td><td class="status done">Concluída</td></tr>
       <tr><td>07</td><td>Operação: BET / WIN / LOSS e idempotência</td><td class="status todo">A fazer</td></tr>
       <tr><td>08</td><td>Reversões e referências pendentes</td><td class="status todo">A fazer</td></tr>
       <tr><td>09</td><td>Autenticação e autorização</td><td class="status todo">A fazer</td></tr>
@@ -1467,6 +1467,274 @@ wg.Wait()</code></pre>
     <li><code>errors.go</code> e <code>errors_test.go</code></li>
     <li><code>wager_transaction_repository.go</code></li>
     <li><code>repositories_test.go</code>: comece por <code>applyBet</code>, que é o caminho de escrita completo de uma aposta</li>
+  </ol>
+</section>
+
+<!-- ============================ SPEC 06 ============================ -->
+<section class="chapter">
+  <div class="chapter-label">Spec 06</div>
+  <h1>Carteira: abertura, leitura e ledger paginado</h1>
+  <p class="lead">O primeiro fluxo de ponta a ponta. Uma requisição HTTP atravessa todas as camadas construídas até aqui: handler, caso de uso, domínio, repositórios e banco.</p>
+
+  <h2>1. O que a spec pedia</h2>
+  <ul>
+    <li><code>POST /wallets</code>, <code>GET /wallets/:id</code> e <code>GET /wallets/:id/ledger</code>.</li>
+    <li>Abertura com saldo positivo grava, no mesmo commit: carteira, transação <code>OPENING</code>, lançamento de crédito e dois eventos na outbox.</li>
+    <li>Abertura com saldo zero grava só a carteira.</li>
+    <li>Segunda carteira para o mesmo jogador e moeda: conflito.</li>
+    <li>Ledger paginado com cursor opaco e ordenação estável.</li>
+  </ul>
+
+  <h2>2. O que foi construído</h2>
+  <table>
+    <thead><tr><th>Arquivo</th><th>Conteúdo</th></tr></thead>
+    <tbody>
+      <tr><td><code>internal/domain/events.go</code></td><td>Os quatro eventos do desafio e o envelope comum</td></tr>
+      <tr><td><code>internal/application/open_wallet.go</code></td><td>Caso de uso de abertura</td></tr>
+      <tr><td><code>internal/application/get_wallet.go</code>, <code>list_ledger.go</code></td><td>Leitura da carteira e paginação do ledger</td></tr>
+      <tr><td><code>internal/infra/httpapi/wallets.go</code></td><td>Os três handlers e os contratos JSON</td></tr>
+      <tr><td><code>internal/infra/httpapi/errors.go</code></td><td>Tradução de erro para status HTTP</td></tr>
+      <tr><td><code>internal/infra/httpapi/middleware.go</code></td><td>Correlation ID e recuperação de panic</td></tr>
+      <tr><td><code>internal/infra/system/system.go</code></td><td>Relógio e gerador de UUID v7</td></tr>
+    </tbody>
+  </table>
+
+  <h2>3. O caminho de uma requisição</h2>
+  <ol class="flow">
+    <li><strong>Middleware</strong> lê ou gera o <code>X-Correlation-Id</code> e o coloca no <code>context</code>.</li>
+    <li><strong>Handler</strong> decodifica o JSON e chama o caso de uso. Não tem regra de negócio.</li>
+    <li><strong>Caso de uso</strong> cria os objetos de domínio e abre a transação SQL.</li>
+    <li><strong>Domínio</strong> valida: <code>OpenWallet</code>, <code>NewOpeningTransaction</code>, <code>NewLedgerEntry</code>, eventos.</li>
+    <li><strong>Repositórios</strong> gravam tudo dentro da mesma transação.</li>
+    <li><strong>Handler</strong> converte o resultado, ou o erro, em resposta HTTP.</li>
+  </ol>
+  <p>Cada camada conhece só a de dentro. O handler não sabe que existe Postgres; o caso de uso não sabe que existe HTTP. É por isso que o mesmo caso de uso vai servir ao consumidor SQS na spec 11.</p>
+
+  <h2>4. O caso de uso de abertura</h2>
+<pre><code>func (uc *OpenWallet) Execute(ctx context.Context, in OpenWalletInput) (*domain.Wallet, error) {
+    now := uc.clock.Now()
+    wallet, err := domain.OpenWallet(uc.ids.NewID(), in.PlayerID, in.InitialBalance, now)
+    if err != nil {
+        return nil, err
+    }
+
+    err = uc.tx.WithinTx(ctx, func(ctx context.Context) error {
+        if err := uc.wallets.Insert(ctx, wallet); err != nil {
+            return err
+        }
+        if wallet.Balance().IsZero() {
+            return nil
+        }
+        return uc.recordOpeningCredit(ctx, wallet, in.CorrelationID)
+    })
+    ...
+}</code></pre>
+  <ul>
+    <li>A validação do domínio acontece <strong>antes</strong> de abrir a transação: entrada inválida não gasta conexão.</li>
+    <li>Saldo zero sai cedo: só a carteira é gravada.</li>
+    <li>Saldo positivo grava a <code>OPENING</code>, o lançamento e os dois eventos. Qualquer erro desfaz tudo, inclusive a carteira.</li>
+    <li>Jogador e moeda repetidos: o <code>INSERT</code> viola o <code>UNIQUE</code>, o repositório devolve <code>ErrWalletAlreadyExists</code> e o handler responde <code>409</code>. Não há consulta prévia "já existe?": duas requisições simultâneas passariam por ela.</li>
+  </ul>
+  <div class="note">
+    <p><strong>Por que a versão é 1 e não 2.</strong> A carteira já nasce com o saldo. Se o caso de uso criasse com zero e chamasse <code>wallet.Credit</code>, a versão subiria para 2, e o desafio fixa 1 na abertura. Por isso o lançamento de abertura é montado direto com <code>NewLedgerEntry</code> (de 0.00 para o saldo inicial).</p>
+  </div>
+
+  <h3>Relógio e IDs como dependência</h3>
+<pre><code>type Clock interface       { Now() time.Time }
+type IDGenerator interface { NewID() string }</code></pre>
+  <p>O domínio recebe <code>id</code> e <code>now</code> por parâmetro (spec 03). Quem os fornece é o caso de uso, por duas interfaces pequenas. Em produção são o relógio do sistema e UUID v7; em teste podem ser valores fixos.</p>
+  <p>O relógio trunca em microssegundo, que é a precisão do PostgreSQL. Sem isso, o horário em memória teria nanossegundos e o relido do banco não seria igual.</p>
+
+  <h2>5. Eventos</h2>
+<pre><code>type EventEnvelope struct {
+    EventID       string    `json:"eventId"`
+    EventType     string    `json:"eventType"`
+    AggregateID   string    `json:"aggregateId"`
+    CorrelationID string    `json:"correlationId"`
+    CausationID   string    `json:"causationId,omitempty"`
+    OccurredAt    time.Time `json:"occurredAt"`
+    Version       int       `json:"version"`
+}
+
+type WalletBalanceChanged struct {
+    EventEnvelope
+    Data WalletBalanceChangedData `json:"data"`
+}</code></pre>
+  <ul>
+    <li><strong>Struct tags</strong> (o texto entre crases) dizem ao <code>encoding/json</code> o nome de cada campo. É o <code>[JsonPropertyName]</code> do C#. <code>omitempty</code> omite o campo quando está vazio.</li>
+    <li><strong>Embedding:</strong> <code>EventEnvelope</code> aparece sem nome de campo dentro de <code>WalletBalanceChanged</code>. Os campos dele sobem para o nível do evento, no código e no JSON. É composição, não herança, mas o efeito no JSON é o de uma classe base.</li>
+    <li>Cada evento tem seu tipo e seu construtor. O construtor define <code>eventType</code> e <code>version</code>; quem chama não escolhe.</li>
+  </ul>
+  <table>
+    <thead><tr><th>Campo</th><th>Valor</th></tr></thead>
+    <tbody>
+      <tr><td><code>aggregateId</code></td><td>Sempre o <code>walletId</code>: mantém a ordem dos eventos de uma carteira na fila FIFO</td></tr>
+      <tr><td><code>correlationId</code></td><td>O ID da requisição que originou tudo</td></tr>
+      <tr><td><code>causationId</code></td><td>O ID da transação que causou o evento</td></tr>
+      <tr><td><code>occurredAt</code></td><td>UTC em RFC 3339</td></tr>
+    </tbody>
+  </table>
+  <p>O evento é serializado e gravado em <code>outbox_events</code> <strong>dentro da transação</strong>. Nada é publicado aqui: a publicação no SQS é da spec 10. É isso que impede evento antes do commit, que é eliminatório.</p>
+
+  <h2>6. Handlers HTTP</h2>
+<pre><code>func (h *WalletHandler) Get(w http.ResponseWriter, r *http.Request) {
+    walletID, err := walletIDParam(r)
+    if err != nil {
+        writeError(w, r, h.logger, err)
+        return
+    }
+    wallet, err := h.get.Execute(r.Context(), walletID)
+    if err != nil {
+        writeError(w, r, h.logger, err)
+        return
+    }
+    writeJSON(w, http.StatusOK, toWalletResponse(wallet))
+}</code></pre>
+  <ul>
+    <li>Todo handler em Go tem esta assinatura: recebe onde escrever a resposta (<code>w</code>) e a requisição (<code>r</code>). Não há valor de retorno; é preciso dar <code>return</code> depois de escrever o erro.</li>
+    <li><code>r.Context()</code> é cancelado se o cliente desconectar. Ele desce até a query no banco.</li>
+    <li>Os tipos <code>walletResponse</code> e <code>openWalletRequest</code> são o contrato JSON. O domínio não tem struct tags de API: o handler converte.</li>
+  </ul>
+  <h3>Decodificação estrita</h3>
+<pre><code>decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRequestBodyBytes))
+decoder.DisallowUnknownFields()</code></pre>
+  <p>Corpo acima de 1 MB, campo desconhecido ou dois objetos seguidos resultam em <code>400</code>. O valor monetário passa pelo <code>UnmarshalJSON</code> do <code>Money</code> (spec 02), então <code>10.5</code> como número JSON ou <code>"10.000"</code> são recusados já na decodificação.</p>
+<pre><code>InitialBalance *domain.Money `json:"initialBalance"`</code></pre>
+  <p>O ponteiro distingue "campo ausente" (<code>nil</code>) de "campo presente".</p>
+
+  <h3>Middleware</h3>
+<pre><code>func correlationID(ids application.IDGenerator) func(http.Handler) http.Handler {
+    return func(next http.Handler) http.Handler {
+        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+            // ... antes ...
+            next.ServeHTTP(w, r.WithContext(ctx))
+            // ... depois ...
+        })
+    }
+}</code></pre>
+  <p>Um middleware é uma função que recebe o próximo handler e devolve outro que o envolve. É o mesmo conceito do pipeline do ASP.NET Core ou dos middlewares do Express. <code>router.Use(...)</code> aplica a todas as rotas.</p>
+
+  <h2>7. Erro vira status em um lugar só</h2>
+  <table>
+    <thead><tr><th>Erro</th><th>HTTP</th><th>Código</th></tr></thead>
+    <tbody>
+      <tr><td><code>*domain.ValidationError</code>, erros do <code>Money</code></td><td>400</td><td><code>INVALID_REQUEST</code></td></tr>
+      <tr><td><code>ErrWalletNotFound</code></td><td>404</td><td><code>WALLET_NOT_FOUND</code></td></tr>
+      <tr><td><code>ErrWalletAlreadyExists</code></td><td>409</td><td><code>WALLET_ALREADY_EXISTS</code></td></tr>
+      <tr><td><code>ErrUnavailable</code>, prazo expirado</td><td>503 + <code>Retry-After</code></td><td><code>SERVICE_UNAVAILABLE</code></td></tr>
+      <tr><td>Qualquer outro</td><td>500</td><td><code>INTERNAL_ERROR</code></td></tr>
+    </tbody>
+  </table>
+  <p>O handler só chama <code>writeError</code>. A tabela fica em <code>errors.go</code>, e é aqui que a separação transitório/permanente da spec 05 chega ao cliente.</p>
+  <div class="warn">
+    <p><strong>Erro 500 não vaza detalhe.</strong> A mensagem ao cliente é sempre <code>internal error</code>. A causa real, por exemplo um erro de SQL, vai só para o log, junto com o correlation ID.</p>
+  </div>
+
+  <h2>8. Paginação por cursor</h2>
+<pre><code>SELECT ... FROM wallet_ledger_entries
+ WHERE wallet_id = $1 AND sequence &gt; $2
+ ORDER BY sequence
+ LIMIT $3</code></pre>
+  <table>
+    <thead><tr><th></th><th>Offset (<code>OFFSET 100</code>)</th><th>Cursor (<code>sequence &gt; 100</code>)</th></tr></thead>
+    <tbody>
+      <tr><td>Linha nova inserida durante a leitura</td><td>Pode repetir ou pular itens</td><td>Não afeta as páginas já lidas</td></tr>
+      <tr><td>Custo na página 1000</td><td>O banco lê e descarta as anteriores</td><td>Vai direto pelo índice</td></tr>
+    </tbody>
+  </table>
+  <ul>
+    <li>O cursor é o <code>sequence</code> do último item, em base64url com o prefixo <code>v1:</code>. O cliente só o devolve; não interpreta.</li>
+    <li>A consulta pede <code>limit + 1</code> registros. Se vier o extra, existe próxima página, e ele é descartado.</li>
+    <li>Cursor que a API não emitiu resulta em <code>400</code>.</li>
+    <li>Antes de listar, o caso de uso confere se a carteira existe. Sem isso, carteira inexistente pareceria carteira com ledger vazio.</li>
+  </ul>
+<pre><code>response := ledgerPageResponse{Items: make([]ledgerEntryResponse, len(page.Entries))}</code></pre>
+  <p>Um slice <code>nil</code> vira <code>null</code> no JSON; um slice vazio criado com <code>make</code> vira <code>[]</code>. O contrato devolve sempre <code>[]</code>.</p>
+
+  <h2>9. Ligação no Fx</h2>
+<pre><code>fx.Provide(
+    application.NewOpenWallet,
+    application.NewGetWallet,
+    application.NewListLedger,
+),</code></pre>
+  <p>Os casos de uso são registrados em <code>internal/app</code>, não no pacote <code>application</code>: assim <code>application</code> continua sem importar o Fx. O Fx lê os parâmetros de <code>NewOpenWallet</code> (sete interfaces) e entrega as implementações registradas com <code>fx.As</code> na spec 05.</p>
+
+  <h2>10. Testes</h2>
+<pre><code>request := httptest.NewRequest(http.MethodPost, "/wallets", strings.NewReader(body))
+recorder := httptest.NewRecorder()
+env.router.ServeHTTP(recorder, request)
+// recorder.Code, recorder.Body, recorder.Header()</code></pre>
+  <p><code>httptest</code> chama o router direto, sem abrir porta. É o <code>WebApplicationFactory</code> do ASP.NET ou o <code>supertest</code> do Node. O router, os casos de uso e o banco são os reais.</p>
+  <h3>Como provar "tudo ou nada"</h3>
+<pre><code>type failingOutbox struct {
+    application.OutboxRepository
+    calls int
+}
+
+func (o *failingOutbox) Append(ctx context.Context, m application.OutboxMessage) error {
+    o.calls++
+    if o.calls == 2 {
+        return errOutboxDown
+    }
+    return o.OutboxRepository.Append(ctx, m)
+}</code></pre>
+  <p>A struct embute a interface e sobrescreve um método. Ela falha no segundo evento, quando carteira, transação, lançamento e o primeiro evento já foram gravados. O teste confere que as quatro tabelas terminam vazias.</p>
+  <p><code>decode[T any]</code> no teste é uma função genérica: <code>decode[walletResponse](t, response)</code>. Mesma ideia de <code>Deserialize&lt;T&gt;</code>.</p>
+
+  <h2>11. Como foi verificado</h2>
+  <table>
+    <thead><tr><th>Verificação</th><th>Resultado</th></tr></thead>
+    <tbody>
+      <tr><td>Abrir com 1000.00</td><td>201; 1 carteira, 1 <code>OPENING</code>, 1 crédito de 0.00 para 1000.00, 2 eventos com o correlation ID enviado</td></tr>
+      <tr><td>Abrir com 0.00</td><td>Só a carteira; ledger responde <code>{"items":[],"nextCursor":null}</code></td></tr>
+      <tr><td>Mesma abertura de novo</td><td>409; nada novo gravado. Mesma pessoa em outra moeda: 201</td></tr>
+      <tr><td>12 corpos inválidos</td><td>400 em todos; nenhuma carteira criada</td></tr>
+      <tr><td>Outbox falhando no segundo evento</td><td>Quatro tabelas vazias</td></tr>
+      <tr><td>9 lançamentos, páginas de 3, inserção no meio</td><td>Ordem lida igual à do banco, sem repetir nem pular</td></tr>
+      <tr><td><code>curl</code> no Docker Compose</td><td>Mesmos resultados; eventos conferidos na tabela <code>outbox_events</code></td></tr>
+      <tr><td><code>go test -race</code> (container); cobertura de <code>internal/</code></td><td>Passou; 90,6%</td></tr>
+    </tbody>
+  </table>
+  <div class="warn">
+    <p><strong>Ainda sem autenticação.</strong> Estes endpoints estão abertos até a spec 09, que restringe <code>/wallets</code> ao serviço interno.</p>
+  </div>
+
+  <h2>12. Perguntas de revisão</h2>
+  <dl class="qa">
+    <dt>Por que não consultar "já existe carteira?" antes de inserir?</dt>
+    <dd>Duas requisições simultâneas passariam pela consulta. O <code>UNIQUE</code> do banco é a única checagem que vale entre instâncias.</dd>
+
+    <dt>O que garante que carteira, transação, lançamento e eventos são gravados juntos?</dt>
+    <dd>Tudo acontece dentro de um <code>WithinTx</code>. Qualquer erro retornado faz rollback de todos.</dd>
+
+    <dt>Por que o evento vai para uma tabela em vez de ir direto para o SQS?</dt>
+    <dd>Para ser confirmado no mesmo commit do saldo. Publicar direto permitiria evento sem commit, ou commit sem evento.</dd>
+
+    <dt>O que é embedding e o que ele causa no JSON?</dt>
+    <dd>Colocar um tipo dentro de uma struct sem nome de campo. Os campos sobem de nível: o envelope fica ao lado de <code>data</code>.</dd>
+
+    <dt>Qual a vantagem do cursor sobre o offset?</dt>
+    <dd>Inserções durante a leitura não fazem repetir nem pular itens, e páginas distantes custam o mesmo que a primeira.</dd>
+
+    <dt>Por que a consulta do ledger pede <code>limit + 1</code>?</dt>
+    <dd>O registro extra indica se há próxima página sem uma segunda consulta.</dd>
+
+    <dt>Por que <code>Clock</code> é uma interface?</dt>
+    <dd>Para o caso de uso não ler o relógio direto. Em teste dá para fixar o horário; em produção ele é truncado na precisão do banco.</dd>
+
+    <dt>Onde um erro vira status HTTP?</dt>
+    <dd>Em <code>toAPIError</code>, em <code>errors.go</code>. Os handlers só chamam <code>writeError</code>.</dd>
+  </dl>
+
+  <h3>Ordem de leitura do código</h3>
+  <ol>
+    <li><code>internal/infra/httpapi/server.go</code>: as rotas</li>
+    <li><code>internal/infra/httpapi/wallets.go</code></li>
+    <li><code>internal/application/open_wallet.go</code></li>
+    <li><code>internal/domain/events.go</code></li>
+    <li><code>internal/application/list_ledger.go</code></li>
+    <li><code>internal/infra/httpapi/errors.go</code> e <code>middleware.go</code></li>
+    <li><code>internal/infra/httpapi/wallets_test.go</code></li>
   </ol>
 </section>
 
