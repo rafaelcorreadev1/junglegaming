@@ -171,7 +171,7 @@
   <p class="sub">O que foi construído em cada spec, por que foi feito assim e quais conceitos de Go aparecem, para quem vem de C#, Python e TypeScript.</p>
   <div class="meta">
     Repositório: github.com/rafaelcorreadev1/junglegaming<br>
-    Atualizado até a spec 02 · 13/10/2026
+    Atualizado até a spec 04 · 13/10/2026
   </div>
 </section>
 
@@ -195,8 +195,8 @@
     <tbody>
       <tr><td>01</td><td>Bootstrap: módulo Go, Fx, config, Docker Compose</td><td class="status done">Concluída</td></tr>
       <tr><td>02</td><td>Money</td><td class="status done">Concluída</td></tr>
-      <tr><td>03</td><td>Domínio: Wallet, Ledger, WagerTransaction</td><td class="status todo">A fazer</td></tr>
-      <tr><td>04</td><td>Schema e migrations</td><td class="status todo">A fazer</td></tr>
+      <tr><td>03</td><td>Domínio: Wallet, Ledger, WagerTransaction</td><td class="status done">Concluída</td></tr>
+      <tr><td>04</td><td>Schema e migrations</td><td class="status done">Concluída</td></tr>
       <tr><td>05</td><td>Persistência e transação SQL</td><td class="status todo">A fazer</td></tr>
       <tr><td>06</td><td>Carteira: abertura, leitura, ledger paginado</td><td class="status todo">A fazer</td></tr>
       <tr><td>07</td><td>Operação: BET / WIN / LOSS e idempotência</td><td class="status todo">A fazer</td></tr>
@@ -635,6 +635,581 @@ func (m *Money) UnmarshalJSON(data []byte) error  // JSON   -&gt; Money</code></
     <dt>Por que <code>ParseMoney</code> aceita <code>"-5.00"</code>, se o desafio proíbe valor negativo nas entradas?</dt>
     <dd><code>Money</code> também representa diferenças, que podem ser negativas. Quem proíbe negativo em uma aposta ou em um saldo é a entidade que recebe o valor, na spec 03.</dd>
   </dl>
+</section>
+
+<!-- ============================ SPEC 03 ============================ -->
+<section class="chapter">
+  <div class="chapter-label">Spec 03</div>
+  <h1>Domínio: Wallet, Ledger e WagerTransaction</h1>
+  <p class="lead">As regras financeiras do sistema, em Go puro. Nada aqui conhece banco, HTTP ou fila: são structs, métodos e testes que rodam em milissegundos.</p>
+
+  <h2>1. O que a spec pedia</h2>
+  <ul>
+    <li>Entidades com estado encapsulado, construtores com validação e métodos explícitos de transição.</li>
+    <li>Criação e reidratação separadas. Reidratar não pode movimentar saldo nem transicionar estado.</li>
+    <li>Erros classificáveis com <code>errors.Is</code> e <code>errors.As</code>; sem <code>panic</code> para regra de negócio.</li>
+    <li>Carteira que nunca fica negativa e cuja versão só sobe quando o saldo muda.</li>
+    <li>Lançamento de ledger imutável, que valida <code>saldoDepois = saldoAntes ± valor</code>.</li>
+    <li>Transação com máquina de estados e as regras de <code>BET</code>, <code>WIN</code>, <code>LOSS</code>, <code>REFUND</code> e <code>ROLLBACK</code>.</li>
+    <li>Um <code>failureCode</code> estável para cada rejeição.</li>
+  </ul>
+
+  <h2>2. O que foi construído</h2>
+  <table>
+    <thead><tr><th>Arquivo</th><th>Conteúdo</th></tr></thead>
+    <tbody>
+      <tr><td><code>errors.go</code></td><td>Erros sentinela, <code>ValidationError</code> e a lista de <code>FailureCode</code></td></tr>
+      <tr><td><code>ledger.go</code></td><td><code>LedgerEntry</code>: um lançamento de débito ou crédito</td></tr>
+      <tr><td><code>wallet.go</code></td><td><code>Wallet</code>: saldo, versão, <code>Debit</code> e <code>Credit</code></td></tr>
+      <tr><td><code>wager_transaction.go</code></td><td><code>WagerTransaction</code>: dados da operação e a máquina de estados</td></tr>
+      <tr><td><code>wager_rules.go</code></td><td><code>ApplyWager</code>: as regras dos cinco tipos</td></tr>
+    </tbody>
+  </table>
+  <p>Todos ficam em <code>internal/domain/</code>, cada um com o seu <code>_test.go</code>.</p>
+
+  <h3>Como as três peças se relacionam</h3>
+  <table>
+    <thead><tr><th>Peça</th><th>Responde a</th><th>Muda depois de criada?</th></tr></thead>
+    <tbody>
+      <tr><td><code>WagerTransaction</code></td><td>O que o provedor pediu e qual foi o resultado?</td><td>Só o estado, até ficar terminal</td></tr>
+      <tr><td><code>Wallet</code></td><td>Quanto o jogador tem agora?</td><td>Sim, por <code>Debit</code> e <code>Credit</code></td></tr>
+      <tr><td><code>LedgerEntry</code></td><td>Como o saldo chegou até aqui?</td><td>Nunca</td></tr>
+    </tbody>
+  </table>
+
+  <h2>3. Wallet</h2>
+<pre><code>type Wallet struct {
+    id        string
+    playerID  string
+    balance   Money
+    version   int64
+    createdAt time.Time
+    updatedAt time.Time
+}</code></pre>
+  <p>Todos os campos são privados. O saldo só muda por <code>Debit</code> e <code>Credit</code>, e os dois devolvem o lançamento de ledger correspondente. Assim é impossível alterar o saldo sem gerar o registro.</p>
+<pre><code>func (w *Wallet) Debit(entryID, transactionID string, amount Money, now time.Time) (LedgerEntry, error)</code></pre>
+
+  <h3>Validar tudo antes de alterar</h3>
+  <p>O método calcula o novo saldo, checa as regras, monta o lançamento e só então grava. Se qualquer passo falhar, a carteira fica intacta:</p>
+<pre><code>if newBalance.IsNegative() {
+    return LedgerEntry{}, fmt.Errorf("%w: balance %s, debit %s", ErrInsufficientFunds, w.balance, amount)
+}
+
+entry, err := NewLedgerEntry(entryID, w.id, transactionID, direction, amount, w.balance, newBalance, now)
+if err != nil {
+    return LedgerEntry{}, err
+}
+
+w.balance = newBalance
+w.version++
+w.updatedAt = now
+return entry, nil</code></pre>
+  <p>Há um teste que executa oito movimentações inválidas e confere, em cada uma, que saldo, versão e data não mudaram.</p>
+
+  <h3>Criação e reidratação</h3>
+  <table>
+    <thead><tr><th>Função</th><th>Quando</th><th>O que faz</th></tr></thead>
+    <tbody>
+      <tr><td><code>OpenWallet</code></td><td>Carteira nova</td><td>Versão 1, saldo inicial, as duas datas iguais</td></tr>
+      <tr><td><code>RehydrateWallet</code></td><td>Linha lida do banco</td><td>Restaura exatamente o que recebeu; só valida</td></tr>
+    </tbody>
+  </table>
+  <p>É a diferença entre um construtor público e o que um ORM faria por reflexão em C#. Aqui os dois caminhos são explícitos.</p>
+
+  <h2>4. LedgerEntry</h2>
+  <p>Um lançamento guarda carteira, transação, direção (<code>DEBIT</code> ou <code>CREDIT</code>), valor, saldo antes e saldo depois. O construtor refaz a conta e recusa qualquer combinação que não feche:</p>
+<pre><code>switch direction {
+case LedgerDebit:
+    expected, err = balanceBefore.Sub(amount)
+case LedgerCredit:
+    expected, err = balanceBefore.Add(amount)
+default:
+    return LedgerEntry{}, invalid("direction", "must be DEBIT or CREDIT")
+}
+...
+if !expected.Equal(balanceAfter) {
+    return LedgerEntry{}, invalid("balanceAfter", "does not match balanceBefore and amount")
+}</code></pre>
+  <p>Não existe método que altere um <code>LedgerEntry</code>. Para corrigir um erro financeiro, cria-se um novo lançamento no sentido contrário. É o que "append-only" significa.</p>
+
+  <h2>5. WagerTransaction e a máquina de estados</h2>
+  <table>
+    <thead><tr><th>Estado</th><th>Significado</th><th>Pode ir para</th></tr></thead>
+    <tbody>
+      <tr><td><code>PENDING</code></td><td>Aceita, ainda não concluída</td><td><code>PENDING_REFERENCE</code>, <code>PROCESSED</code>, <code>REJECTED</code>, <code>FAILED</code></td></tr>
+      <tr><td><code>PENDING_REFERENCE</code></td><td>Esperando a operação referenciada chegar</td><td><code>PROCESSED</code>, <code>REJECTED</code>, <code>FAILED</code></td></tr>
+      <tr><td><code>PROCESSED</code></td><td>Concluída com sucesso</td><td>Nenhum (terminal)</td></tr>
+      <tr><td><code>REJECTED</code></td><td>Recusada por regra de negócio</td><td>Nenhum (terminal)</td></tr>
+      <tr><td><code>FAILED</code></td><td>Falha permanente de infraestrutura</td><td>Nenhum (terminal)</td></tr>
+    </tbody>
+  </table>
+  <p>No código, a tabela acima é um mapa, e toda mudança de estado passa por uma única função:</p>
+<pre><code>var allowedTransitions = map[TransactionStatus][]TransactionStatus{
+    StatusPending:          {StatusPendingReference, StatusProcessed, StatusRejected, StatusFailed},
+    StatusPendingReference: {StatusProcessed, StatusRejected, StatusFailed},
+}
+
+func (t *WagerTransaction) transition(to TransactionStatus, now time.Time) error {
+    ...
+    if !slices.Contains(allowedTransitions[t.status], to) {
+        return fmt.Errorf("%w: %s -&gt; %s", ErrInvalidTransition, t.status, to)
+    }
+    t.status = to
+    t.updatedAt = now
+    return nil
+}</code></pre>
+  <p>Os estados terminais não aparecem como chave do mapa. Buscar uma chave ausente devolve uma lista vazia, então toda transição a partir deles é recusada, sem precisar de um <code>if</code> para cada caso.</p>
+  <p>Os métodos públicos (<code>MarkProcessed</code>, <code>MarkRejected</code>, <code>MarkFailed</code>, <code>MarkPendingReference</code>) chamam <code>transition</code> e gravam o que acompanha cada resultado: o saldo observado ou o código de falha.</p>
+
+  <h3>Validação por tipo, na criação</h3>
+  <table>
+    <thead><tr><th>Tipo</th><th>Valor</th><th>Referência</th></tr></thead>
+    <tbody>
+      <tr><td><code>BET</code></td><td>Maior que zero</td><td>Não aceita</td></tr>
+      <tr><td><code>WIN</code></td><td>Maior que zero</td><td>Opcional</td></tr>
+      <tr><td><code>LOSS</code></td><td>Exatamente <code>0.00</code></td><td>Não aceita</td></tr>
+      <tr><td><code>REFUND</code></td><td>Maior que zero</td><td>Obrigatória</td></tr>
+      <tr><td><code>ROLLBACK</code></td><td>Maior que zero</td><td>Obrigatória</td></tr>
+      <tr><td><code>OPENING</code></td><td colspan="2">Recusado em <code>NewWagerTransaction</code>; só existe por <code>NewOpeningTransaction</code></td></tr>
+    </tbody>
+  </table>
+  <p>A abertura de carteira tem construtor próprio. Ela já nasce <code>PROCESSED</code> e não carrega provedor, ID externo, chave, hash, rodada nem jogo.</p>
+
+  <h2>6. ApplyWager: as regras dos cinco tipos</h2>
+<pre><code>func ApplyWager(tx *WagerTransaction, wallet *Wallet, ref Reference, entryID string, now time.Time) (*LedgerEntry, error)</code></pre>
+  <p>Recebe a transação, a carteira e o que foi encontrado sobre a referência. Decide o resultado e o grava nos dois objetos.</p>
+  <ol class="flow">
+    <li>A carteira é do mesmo jogador? Se não: <code>PLAYER_MISMATCH</code>.</li>
+    <li>A moeda é a da carteira? Se não: <code>CURRENCY_MISMATCH</code>.</li>
+    <li>Tem referência? Confere contexto, tipo, estado, valor e se já foi revertida.</li>
+    <li>Referência ainda não chegou ou está pendente: a transação fica <code>PENDING_REFERENCE</code>.</li>
+    <li>Define o movimento: débito, crédito ou nenhum.</li>
+    <li>Movimenta a carteira. Falta de saldo vira rejeição.</li>
+    <li>Marca <code>PROCESSED</code> com o saldo resultante.</li>
+  </ol>
+  <table>
+    <thead><tr><th>Tipo</th><th>Movimento</th><th>Referência aceita</th></tr></thead>
+    <tbody>
+      <tr><td><code>BET</code></td><td>Débito</td><td>—</td></tr>
+      <tr><td><code>WIN</code></td><td>Crédito</td><td><code>BET</code></td></tr>
+      <tr><td><code>LOSS</code></td><td>Nenhum; a carteira não é tocada</td><td>—</td></tr>
+      <tr><td><code>REFUND</code></td><td>Crédito</td><td><code>BET</code></td></tr>
+      <tr><td><code>ROLLBACK</code></td><td>De <code>BET</code>: crédito. De <code>WIN</code> ou <code>REFUND</code>: débito</td><td><code>BET</code>, <code>WIN</code>, <code>REFUND</code></td></tr>
+    </tbody>
+  </table>
+
+  <div class="note">
+    <p><strong>Rejeição não é erro.</strong> Aposta sem saldo é um resultado de negócio esperado. <code>ApplyWager</code> retorna sem erro, e a transação fica <code>REJECTED</code> com um <code>failureCode</code>. Isso importa porque a rejeição precisa ser gravada no banco e devolvida igual em um reenvio. O retorno de erro fica para uso incorreto do código, como aplicar uma transação já terminal.</p>
+  </div>
+
+  <h3>Dois tipos de "não deu certo"</h3>
+  <table>
+    <thead><tr><th></th><th>Entrada inválida</th><th>Rejeição de negócio</th></tr></thead>
+    <tbody>
+      <tr><td>Exemplo</td><td><code>BET</code> com valor zero</td><td><code>BET</code> sem saldo</td></tr>
+      <tr><td>Onde é detectada</td><td>No construtor</td><td>Em <code>ApplyWager</code></td></tr>
+      <tr><td>Como aparece no código</td><td>Erro do tipo <code>*ValidationError</code></td><td>Transação <code>REJECTED</code> + <code>failureCode</code></td></tr>
+      <tr><td>É gravada?</td><td>Não</td><td>Sim</td></tr>
+      <tr><td>O provedor pode corrigir e reenviar?</td><td>Sim</td><td>Não; é definitivo</td></tr>
+      <tr><td>HTTP (spec 07)</td><td>400</td><td>422</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Códigos de falha</h3>
+  <table>
+    <thead><tr><th>Código</th><th>Quando</th></tr></thead>
+    <tbody>
+      <tr><td><code>INSUFFICIENT_FUNDS</code></td><td><code>BET</code> sem saldo</td></tr>
+      <tr><td><code>REVERSAL_INSUFFICIENT_FUNDS</code></td><td><code>ROLLBACK</code> que debitaria mais que o saldo</td></tr>
+      <tr><td><code>BALANCE_LIMIT_EXCEEDED</code></td><td>Crédito que passaria do limite do <code>int64</code></td></tr>
+      <tr><td><code>PLAYER_MISMATCH</code></td><td>A carteira é de outro jogador</td></tr>
+      <tr><td><code>CURRENCY_MISMATCH</code></td><td>Moeda diferente da carteira</td></tr>
+      <tr><td><code>REFERENCE_NOT_FOUND</code></td><td>A referência não chegou até expirar (spec 08)</td></tr>
+      <tr><td><code>REFERENCE_NOT_PROCESSED</code></td><td>A referência terminou rejeitada ou com falha</td></tr>
+      <tr><td><code>REFERENCE_MISMATCH</code></td><td>Diverge em provedor, jogador, carteira, moeda ou rodada</td></tr>
+      <tr><td><code>REFERENCE_AMOUNT_MISMATCH</code></td><td>Valor da reversão diferente do original</td></tr>
+      <tr><td><code>REFERENCE_KIND_NOT_ALLOWED</code></td><td>Por exemplo, <code>REFUND</code> de um <code>WIN</code></td></tr>
+      <tr><td><code>ALREADY_REVERSED</code></td><td>A referência já tem uma reversão processada</td></tr>
+    </tbody>
+  </table>
+
+  <h2>7. Conceitos de Go</h2>
+
+  <h3>Tipo de erro próprio e <code>errors.As</code></h3>
+  <p>O erro sentinela diz <em>qual</em> erro aconteceu. Quando o erro precisa carregar dados, usa-se uma struct que implementa o método <code>Error()</code>:</p>
+<pre><code>type ValidationError struct {
+    Field  string
+    Reason string
+}
+
+func (e *ValidationError) Error() string {
+    return fmt.Sprintf("invalid %s: %s", e.Field, e.Reason)
+}</code></pre>
+  <p>Quem recebe usa <code>errors.As</code> para recuperar a struct e ler os campos. É o <code>catch (ValidationException ex)</code> seguido de <code>ex.Field</code>:</p>
+<pre><code>var validation *ValidationError
+if errors.As(err, &amp;validation) {
+    // validation.Field, validation.Reason
+}</code></pre>
+  <table>
+    <thead><tr><th></th><th><code>errors.Is</code></th><th><code>errors.As</code></th></tr></thead>
+    <tbody>
+      <tr><td>Pergunta</td><td>É este erro específico?</td><td>É um erro deste tipo?</td></tr>
+      <tr><td>Compara com</td><td>Uma variável (<code>ErrInsufficientFunds</code>)</td><td>Um tipo (<code>*ValidationError</code>)</td></tr>
+      <tr><td>Dá acesso a dados</td><td>Não</td><td>Sim</td></tr>
+    </tbody>
+  </table>
+  <p>Não há <code>implements</code>: <code>ValidationError</code> vale como <code>error</code> só por ter o método <code>Error() string</code>. É a interface implícita do Go.</p>
+
+  <h3>Enum como tipo nomeado</h3>
+  <p>Go não tem <code>enum</code>. O idioma é criar um tipo a partir de <code>string</code> e declarar as constantes dele:</p>
+<pre><code>type TransactionKind string
+
+const (
+    KindOpening  TransactionKind = "OPENING"
+    KindBet      TransactionKind = "BET"
+    ...
+)
+
+func (k TransactionKind) IsReversal() bool {
+    return k == KindRefund || k == KindRollback
+}</code></pre>
+  <p>O compilador impede passar uma <code>string</code> comum onde se espera <code>TransactionKind</code>, e o tipo pode ter métodos. Mas ele não impede um valor desconhecido como <code>TransactionKind("DEPOSIT")</code>, por isso os construtores validam.</p>
+
+  <h3>Ponteiro ou valor</h3>
+  <table>
+    <thead><tr><th>Tipo</th><th>Receiver</th><th>Motivo</th></tr></thead>
+    <tbody>
+      <tr><td><code>Money</code>, <code>LedgerEntry</code></td><td>Valor: <code>(m Money)</code></td><td>Imutáveis; copiar é seguro e barato</td></tr>
+      <tr><td><code>Wallet</code>, <code>WagerTransaction</code></td><td>Ponteiro: <code>(w *Wallet)</code></td><td>Têm identidade e mudam de estado; todos precisam ver o mesmo objeto</td></tr>
+    </tbody>
+  </table>
+  <p>É a distinção entre <code>struct</code> e <code>class</code> do C#, só que escolhida em cada método.</p>
+
+  <h3>Struct de parâmetros</h3>
+  <p>Go não tem argumentos nomeados nem opcionais. Para uma função com muitos parâmetros do mesmo tipo, agrupa-se tudo em uma struct, o que evita trocar a ordem por engano:</p>
+<pre><code>tx, err := domain.NewWagerTransaction(domain.NewWagerTransactionParams{
+    ID:         "...",
+    ProviderID: "provider-a",
+    Kind:       domain.KindBet,
+    Money:      money,
+    Now:        now,
+})</code></pre>
+
+  <h3>Outros pontos</h3>
+  <ul>
+    <li><strong><code>switch</code> sem expressão</strong> funciona como uma cadeia de <code>if / else if</code> e não precisa de <code>break</code>.</li>
+    <li><strong>Closure:</strong> em <code>ApplyWager</code>, <code>reject</code> é uma função declarada dentro de outra, que enxerga <code>tx</code>, <code>wallet</code> e <code>now</code>.</li>
+    <li><strong>Retorno <code>(valor, bool)</code>:</strong> <code>ResultBalance()</code> devolve o saldo e se ele existe. É o padrão do Go para "pode não ter valor", no lugar de <code>null</code>.</li>
+    <li><strong><code>time.Time{}</code></strong> é o valor zero de data; <code>IsZero()</code> detecta data não informada.</li>
+  </ul>
+
+  <h2>8. Decisões</h2>
+  <table>
+    <thead><tr><th>Decisão</th><th>Motivo</th></tr></thead>
+    <tbody>
+      <tr><td>IDs e o instante entram como parâmetro</td><td>O domínio não gera UUID nem lê o relógio: testes determinísticos e nenhuma dependência externa</td></tr>
+      <tr><td><code>Debit</code> e <code>Credit</code> devolvem o lançamento</td><td>Saldo e ledger nascem juntos; não há como mudar um sem o outro</td></tr>
+      <tr><td>Rejeição de negócio é resultado, não erro</td><td>Precisa ser persistida e reproduzida em reenvios</td></tr>
+      <tr><td>Uma transação aceita uma única reversão processada, de qualquer tipo</td><td>Impede devolver duas vezes o mesmo débito (<code>REFUND</code> + <code>ROLLBACK</code> da mesma aposta)</td></tr>
+      <tr><td><code>ROLLBACK</code> de <code>ROLLBACK</code> é recusado</td><td>O desafio lista só <code>BET</code>, <code>WIN</code> e <code>REFUND</code> como alvos</td></tr>
+      <tr><td><code>WIN</code> com referência espera a aposta chegar</td><td>Mesma regra das reversões; um caminho só para referência ausente</td></tr>
+      <tr><td>Código próprio para valor divergente (<code>REFERENCE_AMOUNT_MISMATCH</code>)</td><td>É o erro mais provável de integração; fica fácil de diagnosticar</td></tr>
+      <tr><td><code>LedgerEntry</code> tem um construtor só</td><td>Não há comportamento a reaplicar na reidratação, apenas a equação a conferir</td></tr>
+    </tbody>
+  </table>
+  <div class="warn">
+    <p><strong>O que esta spec ainda não garante.</strong> As regras estão corretas para um processo só, uma operação por vez. Duas apostas <em>simultâneas</em>, em instâncias diferentes, carregariam cada uma a sua cópia da carteira com saldo 100. Quem resolve isso é o lock no banco (spec 05) e as constraints (spec 04). O domínio decide; o banco garante.</p>
+  </div>
+
+  <h2>9. Como foi verificado</h2>
+  <table>
+    <thead><tr><th>Verificação</th><th>Resultado</th></tr></thead>
+    <tbody>
+      <tr><td><code>go test ./internal/domain/ -cover</code></td><td>243 casos passam; 99,7% das instruções</td></tr>
+      <tr><td><code>go test -race ./...</code> (em container)</td><td>Passou</td></tr>
+      <tr><td><code>gofmt -l .</code> e <code>go vet ./...</code></td><td>Sem saída</td></tr>
+      <tr><td>Imports do pacote <code>domain</code></td><td>Só biblioteca padrão</td></tr>
+    </tbody>
+  </table>
+  <h3>O que os testes cobrem</h3>
+  <ul>
+    <li><strong>Carteira:</strong> abertura, reidratação, débito, crédito, e oito movimentações inválidas que não podem alterar o estado.</li>
+    <li><strong>Ledger:</strong> a equação do saldo nas duas direções e onze entradas inválidas.</li>
+    <li><strong>Máquina de estados:</strong> as 20 combinações de 5 estados de origem por 4 destinos.</li>
+    <li><strong>Política por tipo:</strong> 15 combinações de tipo e valor, 10 de tipo e referência.</li>
+    <li><strong>Regras:</strong> cada tipo no caminho feliz, as duas apostas de 80 sobre 100, a reversão que chega antes da referência e 10 rejeições por referência.</li>
+  </ul>
+
+  <h2>10. Perguntas de revisão</h2>
+  <dl class="qa">
+    <dt>Por que <code>Debit</code> devolve um <code>LedgerEntry</code> em vez de só alterar o saldo?</dt>
+    <dd>Para que seja impossível mudar o saldo sem produzir o lançamento. O desafio exige que cada mudança financeira tenha o registro correspondente.</dd>
+
+    <dt>Uma aposta sem saldo faz <code>ApplyWager</code> devolver erro?</dt>
+    <dd>Não. A função retorna sem erro e a transação fica <code>REJECTED</code> com <code>INSUFFICIENT_FUNDS</code>. É um resultado de negócio que será gravado.</dd>
+
+    <dt>Qual a diferença entre <code>errors.Is</code> e <code>errors.As</code>?</dt>
+    <dd><code>Is</code> compara com um erro específico (uma variável). <code>As</code> procura um erro de um tipo e devolve a struct, dando acesso aos campos.</dd>
+
+    <dt>Por que existem <code>OpenWallet</code> e <code>RehydrateWallet</code>?</dt>
+    <dd>Criar define o estado inicial (versão 1). Reidratar restaura o que estava gravado, sem aplicar nenhuma regra de criação.</dd>
+
+    <dt>Como o código impede uma transição a partir de <code>PROCESSED</code>?</dt>
+    <dd><code>PROCESSED</code> não é chave no mapa de transições. A busca devolve lista vazia e <code>transition</code> retorna <code>ErrInvalidTransition</code>.</dd>
+
+    <dt>Um <code>ROLLBACK</code> debita ou credita?</dt>
+    <dd>Depende do original: faz o movimento contrário. De uma <code>BET</code> (débito), credita. De um <code>WIN</code> ou <code>REFUND</code> (créditos), debita.</dd>
+
+    <dt>O domínio sozinho impede saldo negativo com duas instâncias rodando?</dt>
+    <dd>Não. Cada instância teria a sua cópia da carteira em memória. A garantia entre processos vem do lock e das constraints do banco.</dd>
+
+    <dt>Por que <code>LOSS</code> não altera a versão da carteira?</dt>
+    <dd>A versão só sobe quando o saldo muda. <code>LOSS</code> não movimenta nada, então <code>ApplyWager</code> nem chama a carteira.</dd>
+  </dl>
+
+  <h3>Ordem de leitura do código</h3>
+  <ol>
+    <li><code>errors.go</code></li>
+    <li><code>ledger.go</code></li>
+    <li><code>wallet.go</code> e <code>wallet_test.go</code></li>
+    <li><code>wager_transaction.go</code></li>
+    <li><code>wager_rules.go</code> e <code>wager_rules_test.go</code></li>
+  </ol>
+</section>
+
+<!-- ============================ SPEC 04 ============================ -->
+<section class="chapter">
+  <div class="chapter-label">Spec 04</div>
+  <h1>Schema e migrations</h1>
+  <p class="lead">As mesmas regras do domínio, agora escritas no banco. Se a aplicação tiver um bug, ou se duas instâncias disputarem a mesma carteira, o PostgreSQL recusa o que quebraria uma invariante.</p>
+
+  <h2>1. O que a spec pedia</h2>
+  <ul>
+    <li>Migrations versionadas, com aplicação e reversão.</li>
+    <li>Saldo nunca negativo, garantido pelo banco.</li>
+    <li>Unicidade da carteira por jogador e moeda, da operação externa e da chave de idempotência.</li>
+    <li>Ledger com um lançamento por transação e carteira, protegido contra edição e exclusão.</li>
+    <li>Schema que distingue operação interna (<code>OPENING</code>) de externa e impede crédito inicial duplicado.</li>
+    <li>Tabelas de inbox e outbox.</li>
+  </ul>
+
+  <h2>2. O que foi construído</h2>
+  <table>
+    <thead><tr><th>Arquivo</th><th>Conteúdo</th></tr></thead>
+    <tbody>
+      <tr><td><code>migrations/000001_create_wallets</code></td><td>Tabela <code>wallets</code></td></tr>
+      <tr><td><code>migrations/000002_create_wager_transactions</code></td><td>Tabela <code>wager_transactions</code> e seus índices únicos parciais</td></tr>
+      <tr><td><code>migrations/000003_create_wallet_ledger_entries</code></td><td>Tabela do ledger e os triggers que a tornam append-only</td></tr>
+      <tr><td><code>migrations/000004_create_inbox_and_outbox</code></td><td>Tabelas <code>inbox_messages</code> e <code>outbox_events</code></td></tr>
+      <tr><td><code>migrations/migrations_test.go</code></td><td>Teste que aplica as migrations e tenta violar cada invariante</td></tr>
+      <tr><td><code>docker-compose.yml</code></td><td>Serviço <code>migrate</code>, que roda antes da aplicação</td></tr>
+    </tbody>
+  </table>
+  <p>Cada migration tem dois arquivos: <code>.up.sql</code> (aplica) e <code>.down.sql</code> (desfaz). O número no início do nome define a ordem.</p>
+
+  <h2>3. Como as migrations funcionam</h2>
+  <p>A ferramenta é o <code>golang-migrate</code>. Ela cria no banco a tabela <code>schema_migrations</code>, com uma linha: a versão atual. <code>up</code> aplica os arquivos com número maior que essa versão; <code>down</code> roda os <code>.down.sql</code> na ordem inversa.</p>
+  <p>É o mesmo papel das migrations do Entity Framework ou do TypeORM, com uma diferença: aqui o SQL é escrito à mão, não gerado a partir de classes.</p>
+  <ol class="flow">
+    <li><code>docker compose up</code> sobe o Postgres e espera o healthcheck.</li>
+    <li>O serviço <code>migrate</code> aplica o que falta e termina.</li>
+    <li>O serviço <code>app</code> só inicia depois que o <code>migrate</code> termina com sucesso (<code>service_completed_successfully</code>).</li>
+  </ol>
+  <table>
+    <thead><tr><th>Comando</th><th>Efeito</th></tr></thead>
+    <tbody>
+      <tr><td><code>docker compose run --rm migrate</code></td><td>Aplica tudo o que falta</td></tr>
+      <tr><td><code>... migrate -path=/migrations -database=&lt;url&gt; down 1</code></td><td>Reverte a última migration</td></tr>
+      <tr><td><code>... down -all</code></td><td>Reverte todas</td></tr>
+      <tr><td><code>... version</code></td><td>Mostra a versão atual</td></tr>
+    </tbody>
+  </table>
+
+  <h2>4. As tabelas</h2>
+  <table>
+    <thead><tr><th>Tabela</th><th>Uma linha é</th><th>Pode mudar?</th></tr></thead>
+    <tbody>
+      <tr><td><code>wallets</code></td><td>Uma carteira e seu saldo atual</td><td>Sim: saldo, versão e <code>updated_at</code></td></tr>
+      <tr><td><code>wager_transactions</code></td><td>Uma operação, interna ou externa</td><td>Sim: estado, código de falha, saldo resultante</td></tr>
+      <tr><td><code>wallet_ledger_entries</code></td><td>Um débito ou crédito</td><td>Nunca</td></tr>
+      <tr><td><code>inbox_messages</code></td><td>Uma mensagem SQS já recebida por um consumidor</td><td>Só a conclusão</td></tr>
+      <tr><td><code>outbox_events</code></td><td>Um evento a publicar</td><td>Só os campos de envio</td></tr>
+    </tbody>
+  </table>
+  <p>Dinheiro é sempre um par de colunas: <code>BIGINT</code> com os centavos e <code>CHAR(3)</code> com a moeda. É a mesma representação do <code>Money</code> da spec 02, então gravar e ler não converte nada.</p>
+
+  <h2>5. Os quatro mecanismos usados</h2>
+
+  <h3>CHECK: regra sobre uma linha</h3>
+<pre><code>CONSTRAINT wallets_balance_non_negative CHECK (balance_minor &gt;= 0)</code></pre>
+  <p>O banco avalia a expressão em todo <code>INSERT</code> e <code>UPDATE</code>. Se der falso, o comando falha com SQLSTATE <code>23514</code>. Esta é a rede de segurança contra saldo negativo: mesmo que o lock da aplicação falhasse, o <code>UPDATE</code> não passaria.</p>
+  <p>O <code>CHECK</code> enxerga só a própria linha. Ele serve para regras como "<code>LOSS</code> tem valor zero" ou "transação rejeitada tem código de falha", mas não para "só existe uma abertura por carteira".</p>
+<pre><code>CONSTRAINT wallet_ledger_entries_balance_equation CHECK (
+    (direction = 'CREDIT' AND balance_after_minor = balance_before_minor + amount_minor)
+    OR (direction = 'DEBIT' AND balance_after_minor = balance_before_minor - amount_minor)
+)</code></pre>
+  <p>É a mesma equação que <code>NewLedgerEntry</code> valida no domínio. A regra existe nos dois lugares de propósito.</p>
+
+  <h3>UNIQUE e índice único parcial: regra entre linhas</h3>
+<pre><code>CONSTRAINT wager_transactions_external_key UNIQUE (provider_id, external_transaction_id)</code></pre>
+  <p>Duas linhas com o mesmo par falham com SQLSTATE <code>23505</code>. É isso que impede a mesma operação de ser aplicada duas vezes quando duas instâncias a recebem ao mesmo tempo: uma insere, a outra recebe o erro.</p>
+  <p>Um índice único <strong>parcial</strong> aplica a unicidade só às linhas que passam em um filtro:</p>
+<pre><code>CREATE UNIQUE INDEX wager_transactions_one_opening_per_wallet
+    ON wager_transactions (wallet_id)
+    WHERE kind = 'OPENING';
+
+CREATE UNIQUE INDEX wager_transactions_one_processed_reversal
+    ON wager_transactions (reference_transaction_id)
+    WHERE status = 'PROCESSED' AND kind IN ('REFUND', 'ROLLBACK');</code></pre>
+  <p>O primeiro permite muitas transações por carteira, mas só uma <code>OPENING</code>. O segundo permite várias reversões rejeitadas da mesma aposta, mas só uma processada. É a regra "uma reversão por transação" da spec 03, agora à prova de concorrência.</p>
+  <div class="note">
+    <p><strong>NULL em UNIQUE.</strong> O Postgres trata cada <code>NULL</code> como diferente dos outros. Por isso as transações <code>OPENING</code>, que têm <code>provider_id</code> nulo, não colidem entre si na constraint <code>(provider_id, external_transaction_id)</code>.</p>
+  </div>
+
+  <h3>Chave estrangeira composta: coerência entre tabelas</h3>
+<pre><code>FOREIGN KEY (wallet_id, currency)       REFERENCES wallets (id, currency),
+FOREIGN KEY (transaction_id, wallet_id) REFERENCES wager_transactions (id, wallet_id)</code></pre>
+  <p>Uma FK comum garante que a carteira existe. A composta garante mais: que o lançamento está na <strong>moeda da carteira</strong> e pertence à <strong>mesma carteira da transação</strong>. Para isso a tabela de destino precisa de um <code>UNIQUE</code> nas mesmas colunas, e é por isso que <code>wallets</code> tem <code>UNIQUE (id, currency)</code>, que parece redundante.</p>
+
+  <h3>Trigger: o ledger append-only</h3>
+<pre><code>CREATE FUNCTION reject_wallet_ledger_entry_change() RETURNS trigger
+    LANGUAGE plpgsql AS
+$$
+BEGIN
+    RAISE EXCEPTION 'wallet_ledger_entries is append-only: % is not allowed', TG_OP
+        USING ERRCODE = 'restrict_violation';
+END;
+$$;
+
+CREATE TRIGGER wallet_ledger_entries_append_only
+    BEFORE UPDATE OR DELETE ON wallet_ledger_entries
+    FOR EACH ROW EXECUTE FUNCTION reject_wallet_ledger_entry_change();</code></pre>
+  <p>Um trigger é uma função que o banco executa quando algo acontece na tabela. Esta roda antes de cada <code>UPDATE</code> ou <code>DELETE</code> e sempre lança erro; <code>TG_OP</code> é o nome da operação tentada. Só <code>INSERT</code> passa.</p>
+  <p>Há um segundo trigger para <code>TRUNCATE</code>, porque o trigger por linha não dispara nesse comando.</p>
+
+  <h2>6. Interno e externo na mesma tabela</h2>
+  <p><code>OPENING</code> não tem provedor, ID externo, chave, hash, rodada nem jogo. As outras operações têm todos. As colunas são anuláveis e um <code>CHECK</code> exige um dos dois formatos, sem meio-termo:</p>
+<pre><code>CONSTRAINT wager_transactions_origin CHECK (
+    (kind = 'OPENING' AND status = 'PROCESSED'
+        AND num_nonnulls(provider_id, external_transaction_id, ...) = 0)
+    OR
+    (kind &lt;&gt; 'OPENING'
+        AND num_nulls(provider_id, external_transaction_id, ...) = 0)
+)</code></pre>
+  <p><code>num_nulls</code> e <code>num_nonnulls</code> contam quantos argumentos são nulos ou não nulos. Evitam uma fila de <code>IS NULL AND ... IS NULL</code>.</p>
+
+  <h2>7. Domínio e banco: quem garante o quê</h2>
+  <table>
+    <thead><tr><th>Regra</th><th>No domínio</th><th>No banco</th></tr></thead>
+    <tbody>
+      <tr><td>Saldo não negativo</td><td><code>Wallet.Debit</code></td><td><code>CHECK</code></td></tr>
+      <tr><td>Equação do lançamento</td><td><code>NewLedgerEntry</code></td><td><code>CHECK</code></td></tr>
+      <tr><td>Valor e referência por tipo</td><td><code>NewWagerTransaction</code></td><td><code>CHECK</code></td></tr>
+      <tr><td>Uma reversão processada</td><td><code>Reference.Reversed</code></td><td>Índice único parcial</td></tr>
+      <tr><td>Operação externa única</td><td>—</td><td><code>UNIQUE</code></td></tr>
+      <tr><td>Uma carteira por jogador e moeda</td><td>—</td><td><code>UNIQUE</code></td></tr>
+      <tr><td>Ledger imutável</td><td>Struct sem setters</td><td>Trigger</td></tr>
+    </tbody>
+  </table>
+  <div class="warn">
+    <p><strong>Por que repetir no banco.</strong> Com três instâncias, cada uma tem a sua cópia dos objetos em memória. A validação do domínio só enxerga essa cópia. O banco é o único lugar que todas as instâncias compartilham, então é o único que pode dizer "isso já existe".</p>
+  </div>
+  <p>O domínio continua necessário: ele dá a mensagem de erro certa e o <code>failureCode</code> antes de chegar ao banco. A constraint cobre o que escapar.</p>
+
+  <h2>8. Decisões</h2>
+  <table>
+    <thead><tr><th>Decisão</th><th>Motivo</th></tr></thead>
+    <tbody>
+      <tr><td><code>kind</code>, <code>status</code> e <code>direction</code> em <code>TEXT</code> + <code>CHECK</code>, não <code>ENUM</code></td><td>Mudar a lista de um <code>CHECK</code> é reversível; remover um valor de <code>ENUM</code> do Postgres não é</td></tr>
+      <tr><td>IDs internos em <code>UUID</code>, identificadores de fora em <code>TEXT</code></td><td>O formato de <code>providerId</code> ou <code>externalTransactionId</code> é do provedor</td></tr>
+      <tr><td>Coluna <code>sequence</code> (identity) no ledger</td><td>Ordem estável para a paginação. <code>created_at</code> pode empatar; a sequência não</td></tr>
+      <tr><td>Sem <code>DEFAULT now()</code></td><td>O instante vem da aplicação, o mesmo que o domínio usou</td></tr>
+      <tr><td>Constraints com nome explícito</td><td>O nome vem no erro do Postgres, o que permite à spec 05 traduzir cada violação em um erro de aplicação</td></tr>
+      <tr><td><code>locked_until</code> na outbox</td><td>Um publisher reserva o evento por um prazo; se morrer, outro assume (spec 10)</td></tr>
+      <tr><td>Quatro migrations em vez de uma</td><td>Cada arquivo trata de um assunto e pode ser revertido sozinho</td></tr>
+    </tbody>
+  </table>
+
+  <h2>9. O teste</h2>
+  <p>Constraint não se testa com mock: o teste precisa de um PostgreSQL real. Ele lê a URL de <code>TEST_DATABASE_URL</code> e é pulado quando ela não existe.</p>
+<pre><code>func connect(t *testing.T) *pgx.Conn {
+    url := os.Getenv("TEST_DATABASE_URL")
+    if url == "" {
+        t.Skip("TEST_DATABASE_URL is not set")
+    }
+    // cria um schema descartável e aponta o search_path para ele
+    t.Cleanup(func() { /* DROP SCHEMA ... CASCADE */ })
+}</code></pre>
+  <ul>
+    <li><code>t.Skip</code> marca o teste como pulado, não como falho.</li>
+    <li><code>t.Cleanup</code> registra uma função para rodar ao fim do teste. É o <code>afterEach</code> do Jest ou o <code>Dispose</code> do xUnit.</li>
+    <li>Cada teste cria um <strong>schema</strong> próprio (um namespace de tabelas). Assim ele não interfere nas tabelas reais nem em outro teste.</li>
+  </ul>
+  <p>Cada violação é conferida pelo código e pelo nome da constraint, não só por "deu erro":</p>
+<pre><code>var pgErr *pgconn.PgError
+if !errors.As(err, &amp;pgErr) { ... }
+// pgErr.Code           == "23514"
+// pgErr.ConstraintName == "wallets_balance_non_negative"</code></pre>
+  <p>É o <code>errors.As</code> da spec 03 em uso real: extrai do erro a struct do driver, com o SQLSTATE dentro.</p>
+  <table>
+    <thead><tr><th>SQLSTATE</th><th>Significado</th></tr></thead>
+    <tbody>
+      <tr><td><code>23505</code></td><td>Violação de <code>UNIQUE</code></td></tr>
+      <tr><td><code>23514</code></td><td>Violação de <code>CHECK</code></td></tr>
+      <tr><td><code>23503</code></td><td>Violação de chave estrangeira</td></tr>
+      <tr><td><code>23001</code></td><td><code>restrict_violation</code>: o código escolhido para o trigger do ledger</td></tr>
+    </tbody>
+  </table>
+
+  <h2>10. Como foi verificado</h2>
+  <table>
+    <thead><tr><th>Verificação</th><th>Resultado</th></tr></thead>
+    <tbody>
+      <tr><td><code>migrate up</code> → <code>down -all</code> → <code>up</code></td><td>Depois do <code>down</code> sobra só <code>schema_migrations</code>; o segundo <code>up</code> aplica as 4</td></tr>
+      <tr><td><code>go test ./migrations/</code> com banco real</td><td>21 violações recusadas e 5 casos válidos aceitos</td></tr>
+      <tr><td><code>go test -race ./...</code> (em container)</td><td>Passou</td></tr>
+      <tr><td><code>docker compose up --build</code></td><td><code>migrate</code> termina com código 0, depois <code>app</code> sobe e <code>/health/ready</code> responde 200</td></tr>
+    </tbody>
+  </table>
+<pre><code>docker compose up -d postgres
+docker compose run --rm migrate
+TEST_DATABASE_URL='postgres://wagering:wagering@localhost:5432/wagering?sslmode=disable' go test ./migrations/</code></pre>
+
+  <h2>11. Perguntas de revisão</h2>
+  <dl class="qa">
+    <dt>Se o domínio já impede saldo negativo, para que serve o <code>CHECK</code>?</dt>
+    <dd>O domínio valida a cópia em memória de uma instância. O <code>CHECK</code> vale para todas as instâncias e para qualquer bug da aplicação.</dd>
+
+    <dt>Qual a diferença entre <code>UNIQUE</code> e índice único parcial?</dt>
+    <dd>O parcial tem um <code>WHERE</code>: a unicidade vale só para as linhas que passam no filtro. Ex.: uma única <code>OPENING</code> por carteira.</dd>
+
+    <dt>Por que duas <code>OPENING</code> não colidem em <code>UNIQUE (provider_id, external_transaction_id)</code>?</dt>
+    <dd>Os dois campos são <code>NULL</code> nelas, e o Postgres não considera dois <code>NULL</code> iguais.</dd>
+
+    <dt>Como o ledger fica imutável?</dt>
+    <dd>Um trigger <code>BEFORE UPDATE OR DELETE</code> lança erro em toda tentativa, e outro faz o mesmo para <code>TRUNCATE</code>.</dd>
+
+    <dt>O que o <code>CHECK</code> não consegue fazer?</dt>
+    <dd>Comparar com outras linhas ou tabelas. Para isso existem <code>UNIQUE</code>, chave estrangeira e trigger.</dd>
+
+    <dt>Para que serve <code>UNIQUE (id, currency)</code> em <code>wallets</code>, se <code>id</code> já é único?</dt>
+    <dd>Para ser o destino da FK composta do ledger, que garante lançamento na moeda da carteira.</dd>
+
+    <dt>Como o <code>app</code> sabe que o schema está pronto?</dt>
+    <dd>No Compose ele depende do <code>migrate</code> com <code>service_completed_successfully</code>.</dd>
+
+    <dt>Por que o teste de schema é pulado no <code>go test ./...</code> comum?</dt>
+    <dd>Sem <code>TEST_DATABASE_URL</code> ele chama <code>t.Skip</code>. Ele precisa de um Postgres real.</dd>
+  </dl>
+
+  <h3>Ordem de leitura</h3>
+  <ol>
+    <li><code>000001_create_wallets.up.sql</code></li>
+    <li><code>000002_create_wager_transactions.up.sql</code></li>
+    <li><code>000003_create_wallet_ledger_entries.up.sql</code></li>
+    <li><code>000004_create_inbox_and_outbox.up.sql</code></li>
+    <li><code>migrations_test.go</code>: a lista <code>rejected</code> é um resumo executável das invariantes</li>
+  </ol>
 </section>
 
 </body>
