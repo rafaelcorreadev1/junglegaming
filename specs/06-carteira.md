@@ -27,7 +27,7 @@ Primeiro fluxo ponta a ponta: HTTP → caso de uso → domínio → banco.
 
 ## Requisitos — ledger
 
-- Cursor **opaco** (o cliente não interpreta) e ordenação **estável** (`created_at, id`).
+- Cursor **opaco** (o cliente não interpreta) e ordenação **estável** pela coluna `sequence` do ledger (spec 04).
 - `limit` com padrão `50` e teto definido.
 
 ## Padrão de erro HTTP (válido para todas as specs)
