@@ -47,11 +47,11 @@ func (p ReferenceRetryPolicy) Validate() error {
 }
 
 func (p ReferenceRetryPolicy) delayAfter(attempts int) time.Duration {
-	return exponentialDelay(p.BaseDelay, p.MaxDelay, attempts)
+	return ExponentialDelay(p.BaseDelay, p.MaxDelay, attempts)
 }
 
-// exponentialDelay doubles the wait at each failed attempt: base, 2x, 4x... capped at maxDelay.
-func exponentialDelay(base, maxDelay time.Duration, attempts int) time.Duration {
+// ExponentialDelay doubles the wait at each failed attempt: base, 2x, 4x... capped at maxDelay.
+func ExponentialDelay(base, maxDelay time.Duration, attempts int) time.Duration {
 	delay := base
 	for i := 1; i < attempts; i++ {
 		// Checked before doubling so a large attempt count cannot overflow the duration.

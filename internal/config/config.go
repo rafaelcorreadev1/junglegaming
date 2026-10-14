@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -28,6 +29,10 @@ type Config struct {
 	SQSEndpoint        string
 	OutboxQueueURL     string
 	OutboxPollInterval time.Duration
+
+	WagerQueueURL       string
+	WagerDLQURL         string
+	WagerQueueProviders []string
 }
 
 func Load() (Config, error) {
@@ -47,6 +52,10 @@ func FromEnv(getenv func(string) string) (Config, error) {
 		AWSRegion:      valueOr(getenv("AWS_REGION"), "us-east-1"),
 		SQSEndpoint:    getenv("SQS_ENDPOINT"),
 		OutboxQueueURL: getenv("OUTBOX_QUEUE_URL"),
+
+		WagerQueueURL:       getenv("WAGER_QUEUE_URL"),
+		WagerDLQURL:         getenv("WAGER_DLQ_URL"),
+		WagerQueueProviders: list(getenv("WAGER_QUEUE_PROVIDERS")),
 	}
 
 	var errs []error
@@ -56,6 +65,9 @@ func FromEnv(getenv func(string) string) (Config, error) {
 		{"AUTH_ISSUER", cfg.AuthIssuer},
 		{"AUTH_JWKS_URL", cfg.AuthJWKSURL},
 		{"OUTBOX_QUEUE_URL", cfg.OutboxQueueURL},
+		{"WAGER_QUEUE_URL", cfg.WagerQueueURL},
+		{"WAGER_DLQ_URL", cfg.WagerDLQURL},
+		{"WAGER_QUEUE_PROVIDERS", strings.Join(cfg.WagerQueueProviders, ",")},
 	}
 	for _, r := range required {
 		if r.value == "" {
@@ -123,6 +135,16 @@ func positiveDuration(name, raw string, fallback time.Duration) (time.Duration, 
 		return fallback, fmt.Errorf("%s must be positive", name)
 	}
 	return value, nil
+}
+
+func list(raw string) []string {
+	var values []string
+	for _, value := range strings.Split(raw, ",") {
+		if value = strings.TrimSpace(value); value != "" {
+			values = append(values, value)
+		}
+	}
+	return values
 }
 
 func valueOr(value, fallback string) string {

@@ -19,6 +19,7 @@ var (
 	ErrIdempotencyConflict          = errors.New("idempotency key reused with a different payload")
 	ErrExternalTransactionConflict  = errors.New("external transaction already sent with another idempotency key")
 	ErrConcurrentUpdate             = errors.New("wallet was changed by another writer")
+	ErrMessageConflict              = errors.New("message id already received with a different body")
 
 	// ErrUnavailable marks failures worth retrying: the same call may succeed later without any change.
 	ErrUnavailable = errors.New("storage temporarily unavailable")
@@ -98,6 +99,18 @@ type OutboxRepository interface {
 	Reschedule(ctx context.Context, id string, next time.Time, lastError string) error
 	// Release returns claimed events that were not attempted, so they can be claimed again at once.
 	Release(ctx context.Context, ids []string) error
+}
+
+// InboxRecord is what an earlier delivery of a message left behind.
+type InboxRecord struct {
+	PayloadHash string
+	Completed   bool
+}
+
+type InboxRepository interface {
+	// Receive records the first delivery of a message and reports true; for a later delivery it returns the stored record and false.
+	Receive(ctx context.Context, consumerName, messageID, payloadHash string, now time.Time) (InboxRecord, bool, error)
+	Complete(ctx context.Context, consumerName, messageID string, now time.Time) error
 }
 
 type EventPublisher interface {

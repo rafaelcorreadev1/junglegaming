@@ -37,6 +37,7 @@ func Options(cfg config.Config) fx.Option {
 			application.NewResolvePendingReferences,
 			application.DefaultOutboxPolicy,
 			application.NewPublishOutbox,
+			application.NewHandleWagerMessage,
 		),
 		sqs.Module,
 		httpapi.Module,

@@ -85,6 +85,9 @@ services:
       SQS_ENDPOINT: http://localstack:4566
       OUTBOX_QUEUE_URL: http://localstack:4566/000000000000/wager-events.fifo
       OUTBOX_POLL_INTERVAL: ${OUTBOX_POLL_INTERVAL:-500ms}
+      WAGER_QUEUE_URL: http://localstack:4566/000000000000/wager-transactions.fifo
+      WAGER_DLQ_URL: http://localstack:4566/000000000000/wager-transactions-dlq.fifo
+      WAGER_QUEUE_PROVIDERS: ${WAGER_QUEUE_PROVIDERS:-provider-a,provider-b}
     ports:
       - "${APP_PORT:-8080}:8080"
     depends_on:

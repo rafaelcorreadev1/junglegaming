@@ -92,7 +92,7 @@ func (uc *PublishOutbox) giveBack(ctx context.Context, failed OutboxRecord, untr
 	if len(lastError) > maxLastErrorLength {
 		lastError = lastError[:maxLastErrorLength]
 	}
-	next := uc.clock.Now().Add(exponentialDelay(uc.policy.BaseDelay, uc.policy.MaxDelay, failed.Attempts+1))
+	next := uc.clock.Now().Add(ExponentialDelay(uc.policy.BaseDelay, uc.policy.MaxDelay, failed.Attempts+1))
 	// Detached so a shutdown in the middle still records the failure instead of waiting for the lease.
 	bookkeeping := context.WithoutCancel(ctx)
 	if err := uc.outbox.Reschedule(bookkeeping, failed.Message.ID, next, lastError); err != nil {

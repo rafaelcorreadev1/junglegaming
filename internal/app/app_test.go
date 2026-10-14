@@ -28,6 +28,10 @@ func TestOptionsBuildAValidDependencyGraph(t *testing.T) {
 		SQSEndpoint:        "http://127.0.0.1:4566",
 		OutboxQueueURL:     "http://127.0.0.1:4566/000000000000/wager-events.fifo",
 		OutboxPollInterval: time.Second,
+
+		WagerQueueURL:       "http://127.0.0.1:4566/000000000000/wager-transactions.fifo",
+		WagerDLQURL:         "http://127.0.0.1:4566/000000000000/wager-transactions-dlq.fifo",
+		WagerQueueProviders: []string{"provider-a"},
 	}
 
 	if err := fx.ValidateApp(Options(cfg)); err != nil {

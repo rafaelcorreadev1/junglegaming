@@ -20,6 +20,7 @@ Servidor HTTP, consumidor SQS, publisher da outbox, worker de referências pende
   2. Conclui o trabalho em andamento dentro do prazo, ou libera (devolve visibilidade da mensagem, solta reserva da outbox).
   3. Fecha as dependências (pool, clientes) depois que quem as usa terminou.
 - O Fx já executa os `OnStop` na ordem inversa dos `OnStart`; a ordem de dependência dos construtores garante o item 3.
+- Já entregue: o consumidor SQS faz os itens 1 e 2 desde a spec 11 (busca e processamento com contextos separados); falta revisar o conjunto.
 
 ## Entregáveis
 

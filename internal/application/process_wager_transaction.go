@@ -62,29 +62,38 @@ func NewProcessWagerTransaction(
 }
 
 func (uc *ProcessWagerTransaction) Execute(ctx context.Context, in ProcessWagerInput) (ProcessWagerResult, error) {
-	if err := validateProcessInput(in); err != nil {
-		return ProcessWagerResult{}, err
-	}
-	hash, err := payloadHash(in)
+	hash, err := prepareProcessInput(in)
 	if err != nil {
 		return ProcessWagerResult{}, err
 	}
 
 	var result ProcessWagerResult
-	for attempt := 1; ; attempt++ {
-		err = uc.tx.WithinTx(ctx, func(ctx context.Context) error {
-			var processErr error
-			result, processErr = uc.process(ctx, in, hash)
-			return processErr
-		})
-		if !lostDuplicateRace(err) || attempt == maxProcessAttempts {
-			break
-		}
-	}
+	err = withinTxRetryingRaces(ctx, uc.tx, func(ctx context.Context) error {
+		var processErr error
+		result, processErr = uc.process(ctx, in, hash)
+		return processErr
+	})
 	if err != nil {
 		return ProcessWagerResult{}, err
 	}
 	return result, nil
+}
+
+func prepareProcessInput(in ProcessWagerInput) (string, error) {
+	if err := validateProcessInput(in); err != nil {
+		return "", err
+	}
+	return payloadHash(in)
+}
+
+// withinTxRetryingRaces runs fn in a fresh transaction each time, since a unique violation aborts the one it happened in.
+func withinTxRetryingRaces(ctx context.Context, tx TxManager, fn func(ctx context.Context) error) error {
+	for attempt := 1; ; attempt++ {
+		err := tx.WithinTx(ctx, fn)
+		if !lostDuplicateRace(err) || attempt == maxProcessAttempts {
+			return err
+		}
+	}
 }
 
 func validateProcessInput(in ProcessWagerInput) error {

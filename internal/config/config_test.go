@@ -13,10 +13,13 @@ func envFrom(values map[string]string) func(string) string {
 
 func TestFromEnvAppliesDefaults(t *testing.T) {
 	cfg, err := FromEnv(envFrom(map[string]string{
-		"DATABASE_URL":     "postgres://localhost/wagering",
-		"AUTH_ISSUER":      "http://keycloak/realms/wagering",
-		"AUTH_JWKS_URL":    "http://keycloak/certs",
-		"OUTBOX_QUEUE_URL": "http://localstack/queue",
+		"DATABASE_URL":          "postgres://localhost/wagering",
+		"AUTH_ISSUER":           "http://keycloak/realms/wagering",
+		"AUTH_JWKS_URL":         "http://keycloak/certs",
+		"OUTBOX_QUEUE_URL":      "http://localstack/queue",
+		"WAGER_QUEUE_URL":       "http://localstack/wagers",
+		"WAGER_DLQ_URL":         "http://localstack/wagers-dlq",
+		"WAGER_QUEUE_PROVIDERS": "provider-a",
 	}))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -46,17 +49,20 @@ func TestFromEnvAppliesDefaults(t *testing.T) {
 
 func TestFromEnvReadsOverrides(t *testing.T) {
 	cfg, err := FromEnv(envFrom(map[string]string{
-		"DATABASE_URL":         "postgres://localhost/wagering",
-		"AUTH_ISSUER":          "http://keycloak/realms/wagering",
-		"AUTH_JWKS_URL":        "http://keycloak/certs",
-		"AUTH_AUDIENCE":        "custom-audience",
-		"OUTBOX_QUEUE_URL":     "http://localstack/queue",
-		"SQS_ENDPOINT":         "http://localstack:4566",
-		"AWS_REGION":           "sa-east-1",
-		"OUTBOX_POLL_INTERVAL": "2s",
-		"HTTP_ADDR":            ":9090",
-		"LOG_LEVEL":            "debug",
-		"SHUTDOWN_TIMEOUT":     "5s",
+		"DATABASE_URL":          "postgres://localhost/wagering",
+		"AUTH_ISSUER":           "http://keycloak/realms/wagering",
+		"AUTH_JWKS_URL":         "http://keycloak/certs",
+		"AUTH_AUDIENCE":         "custom-audience",
+		"OUTBOX_QUEUE_URL":      "http://localstack/queue",
+		"WAGER_QUEUE_URL":       "http://localstack/wagers",
+		"WAGER_DLQ_URL":         "http://localstack/wagers-dlq",
+		"WAGER_QUEUE_PROVIDERS": " provider-a, ,provider-b ",
+		"SQS_ENDPOINT":          "http://localstack:4566",
+		"AWS_REGION":            "sa-east-1",
+		"OUTBOX_POLL_INTERVAL":  "2s",
+		"HTTP_ADDR":             ":9090",
+		"LOG_LEVEL":             "debug",
+		"SHUTDOWN_TIMEOUT":      "5s",
 
 		"REFERENCE_POLL_INTERVAL":    "250ms",
 		"REFERENCE_RETRY_BASE_DELAY": "2s",
@@ -83,6 +89,10 @@ func TestFromEnvReadsOverrides(t *testing.T) {
 		cfg.AWSRegion != "sa-east-1" || cfg.OutboxPollInterval != 2*time.Second {
 		t.Errorf("sqs = %q/%q/%q/%v", cfg.OutboxQueueURL, cfg.SQSEndpoint, cfg.AWSRegion, cfg.OutboxPollInterval)
 	}
+	if cfg.WagerQueueURL != "http://localstack/wagers" || cfg.WagerDLQURL != "http://localstack/wagers-dlq" ||
+		strings.Join(cfg.WagerQueueProviders, "|") != "provider-a|provider-b" {
+		t.Errorf("wager queue = %q/%q/%q", cfg.WagerQueueURL, cfg.WagerDLQURL, cfg.WagerQueueProviders)
+	}
 	if cfg.ReferencePollInterval != 250*time.Millisecond || cfg.ReferenceRetryBaseDelay != 2*time.Second ||
 		cfg.ReferenceRetryMaxDelay != 30*time.Second || cfg.ReferenceMaxAttempts != 4 {
 		t.Errorf("reference retry = %v/%v/%v/%d, want 250ms/2s/30s/4",
@@ -102,43 +112,48 @@ func TestFromEnvRejectsInvalidValues(t *testing.T) {
 			wantErr: "DATABASE_URL is required",
 		},
 		{
+			name:    "blank wager queue providers",
+			env:     map[string]string{"DATABASE_URL": "x", "AUTH_ISSUER": "x", "AUTH_JWKS_URL": "x", "OUTBOX_QUEUE_URL": "x", "WAGER_QUEUE_URL": "x", "WAGER_DLQ_URL": "x", "WAGER_QUEUE_PROVIDERS": " , "},
+			wantErr: "WAGER_QUEUE_PROVIDERS is required",
+		},
+		{
 			name:    "unknown log level",
-			env:     map[string]string{"DATABASE_URL": "x", "AUTH_ISSUER": "x", "AUTH_JWKS_URL": "x", "OUTBOX_QUEUE_URL": "x", "LOG_LEVEL": "loud"},
+			env:     map[string]string{"DATABASE_URL": "x", "AUTH_ISSUER": "x", "AUTH_JWKS_URL": "x", "OUTBOX_QUEUE_URL": "x", "WAGER_QUEUE_URL": "x", "WAGER_DLQ_URL": "x", "WAGER_QUEUE_PROVIDERS": "x", "LOG_LEVEL": "loud"},
 			wantErr: "LOG_LEVEL",
 		},
 		{
 			name:    "malformed shutdown timeout",
-			env:     map[string]string{"DATABASE_URL": "x", "AUTH_ISSUER": "x", "AUTH_JWKS_URL": "x", "OUTBOX_QUEUE_URL": "x", "SHUTDOWN_TIMEOUT": "soon"},
+			env:     map[string]string{"DATABASE_URL": "x", "AUTH_ISSUER": "x", "AUTH_JWKS_URL": "x", "OUTBOX_QUEUE_URL": "x", "WAGER_QUEUE_URL": "x", "WAGER_DLQ_URL": "x", "WAGER_QUEUE_PROVIDERS": "x", "SHUTDOWN_TIMEOUT": "soon"},
 			wantErr: "SHUTDOWN_TIMEOUT",
 		},
 		{
 			name:    "malformed reference poll interval",
-			env:     map[string]string{"DATABASE_URL": "x", "AUTH_ISSUER": "x", "AUTH_JWKS_URL": "x", "OUTBOX_QUEUE_URL": "x", "REFERENCE_POLL_INTERVAL": "often"},
+			env:     map[string]string{"DATABASE_URL": "x", "AUTH_ISSUER": "x", "AUTH_JWKS_URL": "x", "OUTBOX_QUEUE_URL": "x", "WAGER_QUEUE_URL": "x", "WAGER_DLQ_URL": "x", "WAGER_QUEUE_PROVIDERS": "x", "REFERENCE_POLL_INTERVAL": "often"},
 			wantErr: "REFERENCE_POLL_INTERVAL",
 		},
 		{
 			name:    "non-positive reference base delay",
-			env:     map[string]string{"DATABASE_URL": "x", "AUTH_ISSUER": "x", "AUTH_JWKS_URL": "x", "OUTBOX_QUEUE_URL": "x", "REFERENCE_RETRY_BASE_DELAY": "-1s"},
+			env:     map[string]string{"DATABASE_URL": "x", "AUTH_ISSUER": "x", "AUTH_JWKS_URL": "x", "OUTBOX_QUEUE_URL": "x", "WAGER_QUEUE_URL": "x", "WAGER_DLQ_URL": "x", "WAGER_QUEUE_PROVIDERS": "x", "REFERENCE_RETRY_BASE_DELAY": "-1s"},
 			wantErr: "REFERENCE_RETRY_BASE_DELAY must be positive",
 		},
 		{
 			name:    "reference max delay below the base delay",
-			env:     map[string]string{"DATABASE_URL": "x", "AUTH_ISSUER": "x", "AUTH_JWKS_URL": "x", "OUTBOX_QUEUE_URL": "x", "REFERENCE_RETRY_BASE_DELAY": "10s", "REFERENCE_RETRY_MAX_DELAY": "5s"},
+			env:     map[string]string{"DATABASE_URL": "x", "AUTH_ISSUER": "x", "AUTH_JWKS_URL": "x", "OUTBOX_QUEUE_URL": "x", "WAGER_QUEUE_URL": "x", "WAGER_DLQ_URL": "x", "WAGER_QUEUE_PROVIDERS": "x", "REFERENCE_RETRY_BASE_DELAY": "10s", "REFERENCE_RETRY_MAX_DELAY": "5s"},
 			wantErr: "REFERENCE_RETRY_MAX_DELAY must not be shorter",
 		},
 		{
 			name:    "malformed reference max attempts",
-			env:     map[string]string{"DATABASE_URL": "x", "AUTH_ISSUER": "x", "AUTH_JWKS_URL": "x", "OUTBOX_QUEUE_URL": "x", "REFERENCE_MAX_ATTEMPTS": "many"},
+			env:     map[string]string{"DATABASE_URL": "x", "AUTH_ISSUER": "x", "AUTH_JWKS_URL": "x", "OUTBOX_QUEUE_URL": "x", "WAGER_QUEUE_URL": "x", "WAGER_DLQ_URL": "x", "WAGER_QUEUE_PROVIDERS": "x", "REFERENCE_MAX_ATTEMPTS": "many"},
 			wantErr: "REFERENCE_MAX_ATTEMPTS",
 		},
 		{
 			name:    "zero reference max attempts",
-			env:     map[string]string{"DATABASE_URL": "x", "AUTH_ISSUER": "x", "AUTH_JWKS_URL": "x", "OUTBOX_QUEUE_URL": "x", "REFERENCE_MAX_ATTEMPTS": "0"},
+			env:     map[string]string{"DATABASE_URL": "x", "AUTH_ISSUER": "x", "AUTH_JWKS_URL": "x", "OUTBOX_QUEUE_URL": "x", "WAGER_QUEUE_URL": "x", "WAGER_DLQ_URL": "x", "WAGER_QUEUE_PROVIDERS": "x", "REFERENCE_MAX_ATTEMPTS": "0"},
 			wantErr: "REFERENCE_MAX_ATTEMPTS must be at least 1",
 		},
 		{
 			name:    "non-positive shutdown timeout",
-			env:     map[string]string{"DATABASE_URL": "x", "AUTH_ISSUER": "x", "AUTH_JWKS_URL": "x", "OUTBOX_QUEUE_URL": "x", "SHUTDOWN_TIMEOUT": "0s"},
+			env:     map[string]string{"DATABASE_URL": "x", "AUTH_ISSUER": "x", "AUTH_JWKS_URL": "x", "OUTBOX_QUEUE_URL": "x", "WAGER_QUEUE_URL": "x", "WAGER_DLQ_URL": "x", "WAGER_QUEUE_PROVIDERS": "x", "SHUTDOWN_TIMEOUT": "0s"},
 			wantErr: "SHUTDOWN_TIMEOUT must be positive",
 		},
 	}

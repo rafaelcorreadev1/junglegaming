@@ -19,6 +19,7 @@ var Module = fx.Module("postgres",
 		fx.Annotate(NewWagerTransactionRepository, fx.As(new(application.WagerTransactionRepository))),
 		fx.Annotate(NewLedgerRepository, fx.As(new(application.LedgerRepository))),
 		fx.Annotate(NewOutboxRepository, fx.As(new(application.OutboxRepository))),
+		fx.Annotate(NewInboxRepository, fx.As(new(application.InboxRepository))),
 	),
 )
 

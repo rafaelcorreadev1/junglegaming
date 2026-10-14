@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -25,6 +26,7 @@ var Module = fx.Module("sqs",
 	fx.Provide(
 		newClient,
 		fx.Annotate(newPublisher, fx.As(new(application.EventPublisher))),
+		newConsumer,
 	),
 )
 
@@ -34,6 +36,14 @@ func newClient(cfg config.Config) (*sqs.Client, error) {
 
 func newPublisher(client *sqs.Client, cfg config.Config) (*Publisher, error) {
 	return NewPublisher(client, cfg.OutboxQueueURL)
+}
+
+func newConsumer(client *sqs.Client, handler *application.HandleWagerMessage, cfg config.Config, ids application.IDGenerator, logger *slog.Logger) (*Consumer, error) {
+	opts := DefaultConsumerOptions()
+	opts.QueueURL = cfg.WagerQueueURL
+	opts.DLQURL = cfg.WagerDLQURL
+	opts.AllowedProviders = cfg.WagerQueueProviders
+	return NewConsumer(client, handler, opts, ids, logger)
 }
 
 func NewClient(ctx context.Context, cfg ClientConfig) (*sqs.Client, error) {

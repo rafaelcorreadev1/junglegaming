@@ -8,10 +8,11 @@ import (
 
 	"wagering-service/internal/application"
 	"wagering-service/internal/config"
+	"wagering-service/internal/infra/sqs"
 )
 
 var Module = fx.Module("worker",
-	fx.Invoke(startReferenceResolver, startOutboxPublisher),
+	fx.Invoke(startReferenceResolver, startOutboxPublisher, startWagerConsumer),
 )
 
 func startReferenceResolver(
@@ -34,4 +35,8 @@ func startOutboxPublisher(lc fx.Lifecycle, publisher *application.PublishOutbox,
 		return full, err
 	}
 	NewPoller("outbox-publisher", job, cfg.OutboxPollInterval, logger).Attach(lc)
+}
+
+func startWagerConsumer(lc fx.Lifecycle, consumer *sqs.Consumer) {
+	consumer.Attach(lc)
 }

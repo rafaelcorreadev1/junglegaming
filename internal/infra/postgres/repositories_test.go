@@ -564,3 +564,52 @@ func TestOutboxAppendSchedulesTheFirstAttemptAtTheOccurrence(t *testing.T) {
 		t.Errorf("outbox row = amount %q, attempts %d, next %v, published %v", amount, attempts, nextAttemptAt, published)
 	}
 }
+
+func TestInboxReceiveTellsTheFirstDeliveryFromALaterOne(t *testing.T) {
+	f := newFixture(t)
+	inbox := NewInboxRepository(f.pool)
+	ctx := context.Background()
+
+	err := f.tx.WithinTx(ctx, func(ctx context.Context) error {
+		stored, first, err := inbox.Receive(ctx, "consumer", "msg-1", "hash-1", testNow)
+		if err != nil || !first || stored.PayloadHash != "hash-1" {
+			t.Errorf("first Receive = %+v, %v, %v", stored, first, err)
+		}
+		return inbox.Complete(ctx, "consumer", "msg-1", testNow.Add(time.Second))
+	})
+	if err != nil {
+		t.Fatalf("first delivery: %v", err)
+	}
+
+	stored, first, err := inbox.Receive(ctx, "consumer", "msg-1", "hash-2", testNow.Add(time.Minute))
+	if err != nil || first || stored != (application.InboxRecord{PayloadHash: "hash-1", Completed: true}) {
+		t.Errorf("redelivery = %+v, %v, %v; want the stored record of the first delivery", stored, first, err)
+	}
+	if err := inbox.Complete(ctx, "consumer", "msg-1", testNow.Add(time.Minute)); !errors.Is(err, application.ErrInvariantViolation) {
+		t.Errorf("completing twice: %v, want ErrInvariantViolation", err)
+	}
+
+	if _, first, err := inbox.Receive(ctx, "other-consumer", "msg-1", "hash-1", testNow); err != nil || !first {
+		t.Errorf("another consumer = %v, %v; the message id is unique per consumer only", first, err)
+	}
+}
+
+func TestInboxRowDisappearsWithARolledBackTransaction(t *testing.T) {
+	f := newFixture(t)
+	inbox := NewInboxRepository(f.pool)
+	ctx := context.Background()
+	failure := errors.New("use case failed")
+
+	err := f.tx.WithinTx(ctx, func(ctx context.Context) error {
+		if _, _, err := inbox.Receive(ctx, "consumer", "msg-1", "hash-1", testNow); err != nil {
+			return err
+		}
+		return failure
+	})
+	if !errors.Is(err, failure) {
+		t.Fatalf("WithinTx = %v", err)
+	}
+	if n := f.count(t, "inbox_messages"); n != 0 {
+		t.Errorf("inbox has %d rows after rollback, want 0", n)
+	}
+}
