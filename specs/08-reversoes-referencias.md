@@ -90,7 +90,7 @@ Quando uma transação chega a um estado final, a mesma transação SQL antecipa
 - `internal/domain/wager_transaction.go`: `ScheduleReferenceAttempt`, `ReferenceAttempts`, `NextReferenceAttemptAt`, `CorrelationID`
 - `internal/application/resolve_pending_references.go`: `ReferenceRetryPolicy` e o caso de uso `ResolvePendingReferences`
 - `internal/infra/postgres`: `ClaimPendingReferences` e `WakePendingReferences`
-- `internal/infra/worker/reference_resolver.go`: laço com `time.Ticker`, iniciado e parado pelo ciclo de vida do Fx
+- `internal/infra/worker`: laço com `time.Ticker`, iniciado e parado pelo ciclo de vida do Fx (na spec 10 virou o `Poller` genérico de `poller.go`, compartilhado com o publicador da outbox)
 
 ## Critérios de aceite
 

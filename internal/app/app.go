@@ -11,6 +11,7 @@ import (
 	"wagering-service/internal/infra/httpapi"
 	"wagering-service/internal/infra/observability"
 	"wagering-service/internal/infra/postgres"
+	"wagering-service/internal/infra/sqs"
 	"wagering-service/internal/infra/system"
 	"wagering-service/internal/infra/worker"
 )
@@ -34,7 +35,10 @@ func Options(cfg config.Config) fx.Option {
 			application.NewProcessWagerTransaction,
 			application.NewGetWagerTransaction,
 			application.NewResolvePendingReferences,
+			application.DefaultOutboxPolicy,
+			application.NewPublishOutbox,
 		),
+		sqs.Module,
 		httpapi.Module,
 		worker.Module,
 	)

@@ -13,9 +13,10 @@ func envFrom(values map[string]string) func(string) string {
 
 func TestFromEnvAppliesDefaults(t *testing.T) {
 	cfg, err := FromEnv(envFrom(map[string]string{
-		"DATABASE_URL":  "postgres://localhost/wagering",
-		"AUTH_ISSUER":   "http://keycloak/realms/wagering",
-		"AUTH_JWKS_URL": "http://keycloak/certs",
+		"DATABASE_URL":     "postgres://localhost/wagering",
+		"AUTH_ISSUER":      "http://keycloak/realms/wagering",
+		"AUTH_JWKS_URL":    "http://keycloak/certs",
+		"OUTBOX_QUEUE_URL": "http://localstack/queue",
 	}))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -30,6 +31,9 @@ func TestFromEnvAppliesDefaults(t *testing.T) {
 	if cfg.ShutdownTimeout != 20*time.Second {
 		t.Errorf("ShutdownTimeout = %v, want 20s", cfg.ShutdownTimeout)
 	}
+	if cfg.AWSRegion != "us-east-1" || cfg.SQSEndpoint != "" || cfg.OutboxPollInterval != 500*time.Millisecond {
+		t.Errorf("sqs defaults = %q/%q/%v", cfg.AWSRegion, cfg.SQSEndpoint, cfg.OutboxPollInterval)
+	}
 	if cfg.AuthAudience != "wagering-service" {
 		t.Errorf("AuthAudience = %q, want wagering-service", cfg.AuthAudience)
 	}
@@ -42,13 +46,17 @@ func TestFromEnvAppliesDefaults(t *testing.T) {
 
 func TestFromEnvReadsOverrides(t *testing.T) {
 	cfg, err := FromEnv(envFrom(map[string]string{
-		"DATABASE_URL":     "postgres://localhost/wagering",
-		"AUTH_ISSUER":      "http://keycloak/realms/wagering",
-		"AUTH_JWKS_URL":    "http://keycloak/certs",
-		"AUTH_AUDIENCE":    "custom-audience",
-		"HTTP_ADDR":        ":9090",
-		"LOG_LEVEL":        "debug",
-		"SHUTDOWN_TIMEOUT": "5s",
+		"DATABASE_URL":         "postgres://localhost/wagering",
+		"AUTH_ISSUER":          "http://keycloak/realms/wagering",
+		"AUTH_JWKS_URL":        "http://keycloak/certs",
+		"AUTH_AUDIENCE":        "custom-audience",
+		"OUTBOX_QUEUE_URL":     "http://localstack/queue",
+		"SQS_ENDPOINT":         "http://localstack:4566",
+		"AWS_REGION":           "sa-east-1",
+		"OUTBOX_POLL_INTERVAL": "2s",
+		"HTTP_ADDR":            ":9090",
+		"LOG_LEVEL":            "debug",
+		"SHUTDOWN_TIMEOUT":     "5s",
 
 		"REFERENCE_POLL_INTERVAL":    "250ms",
 		"REFERENCE_RETRY_BASE_DELAY": "2s",
@@ -71,6 +79,10 @@ func TestFromEnvReadsOverrides(t *testing.T) {
 	if cfg.AuthIssuer != "http://keycloak/realms/wagering" || cfg.AuthJWKSURL != "http://keycloak/certs" || cfg.AuthAudience != "custom-audience" {
 		t.Errorf("auth = %q/%q/%q", cfg.AuthIssuer, cfg.AuthJWKSURL, cfg.AuthAudience)
 	}
+	if cfg.OutboxQueueURL != "http://localstack/queue" || cfg.SQSEndpoint != "http://localstack:4566" ||
+		cfg.AWSRegion != "sa-east-1" || cfg.OutboxPollInterval != 2*time.Second {
+		t.Errorf("sqs = %q/%q/%q/%v", cfg.OutboxQueueURL, cfg.SQSEndpoint, cfg.AWSRegion, cfg.OutboxPollInterval)
+	}
 	if cfg.ReferencePollInterval != 250*time.Millisecond || cfg.ReferenceRetryBaseDelay != 2*time.Second ||
 		cfg.ReferenceRetryMaxDelay != 30*time.Second || cfg.ReferenceMaxAttempts != 4 {
 		t.Errorf("reference retry = %v/%v/%v/%d, want 250ms/2s/30s/4",
@@ -91,42 +103,42 @@ func TestFromEnvRejectsInvalidValues(t *testing.T) {
 		},
 		{
 			name:    "unknown log level",
-			env:     map[string]string{"DATABASE_URL": "x", "AUTH_ISSUER": "x", "AUTH_JWKS_URL": "x", "LOG_LEVEL": "loud"},
+			env:     map[string]string{"DATABASE_URL": "x", "AUTH_ISSUER": "x", "AUTH_JWKS_URL": "x", "OUTBOX_QUEUE_URL": "x", "LOG_LEVEL": "loud"},
 			wantErr: "LOG_LEVEL",
 		},
 		{
 			name:    "malformed shutdown timeout",
-			env:     map[string]string{"DATABASE_URL": "x", "AUTH_ISSUER": "x", "AUTH_JWKS_URL": "x", "SHUTDOWN_TIMEOUT": "soon"},
+			env:     map[string]string{"DATABASE_URL": "x", "AUTH_ISSUER": "x", "AUTH_JWKS_URL": "x", "OUTBOX_QUEUE_URL": "x", "SHUTDOWN_TIMEOUT": "soon"},
 			wantErr: "SHUTDOWN_TIMEOUT",
 		},
 		{
 			name:    "malformed reference poll interval",
-			env:     map[string]string{"DATABASE_URL": "x", "AUTH_ISSUER": "x", "AUTH_JWKS_URL": "x", "REFERENCE_POLL_INTERVAL": "often"},
+			env:     map[string]string{"DATABASE_URL": "x", "AUTH_ISSUER": "x", "AUTH_JWKS_URL": "x", "OUTBOX_QUEUE_URL": "x", "REFERENCE_POLL_INTERVAL": "often"},
 			wantErr: "REFERENCE_POLL_INTERVAL",
 		},
 		{
 			name:    "non-positive reference base delay",
-			env:     map[string]string{"DATABASE_URL": "x", "AUTH_ISSUER": "x", "AUTH_JWKS_URL": "x", "REFERENCE_RETRY_BASE_DELAY": "-1s"},
+			env:     map[string]string{"DATABASE_URL": "x", "AUTH_ISSUER": "x", "AUTH_JWKS_URL": "x", "OUTBOX_QUEUE_URL": "x", "REFERENCE_RETRY_BASE_DELAY": "-1s"},
 			wantErr: "REFERENCE_RETRY_BASE_DELAY must be positive",
 		},
 		{
 			name:    "reference max delay below the base delay",
-			env:     map[string]string{"DATABASE_URL": "x", "AUTH_ISSUER": "x", "AUTH_JWKS_URL": "x", "REFERENCE_RETRY_BASE_DELAY": "10s", "REFERENCE_RETRY_MAX_DELAY": "5s"},
+			env:     map[string]string{"DATABASE_URL": "x", "AUTH_ISSUER": "x", "AUTH_JWKS_URL": "x", "OUTBOX_QUEUE_URL": "x", "REFERENCE_RETRY_BASE_DELAY": "10s", "REFERENCE_RETRY_MAX_DELAY": "5s"},
 			wantErr: "REFERENCE_RETRY_MAX_DELAY must not be shorter",
 		},
 		{
 			name:    "malformed reference max attempts",
-			env:     map[string]string{"DATABASE_URL": "x", "AUTH_ISSUER": "x", "AUTH_JWKS_URL": "x", "REFERENCE_MAX_ATTEMPTS": "many"},
+			env:     map[string]string{"DATABASE_URL": "x", "AUTH_ISSUER": "x", "AUTH_JWKS_URL": "x", "OUTBOX_QUEUE_URL": "x", "REFERENCE_MAX_ATTEMPTS": "many"},
 			wantErr: "REFERENCE_MAX_ATTEMPTS",
 		},
 		{
 			name:    "zero reference max attempts",
-			env:     map[string]string{"DATABASE_URL": "x", "AUTH_ISSUER": "x", "AUTH_JWKS_URL": "x", "REFERENCE_MAX_ATTEMPTS": "0"},
+			env:     map[string]string{"DATABASE_URL": "x", "AUTH_ISSUER": "x", "AUTH_JWKS_URL": "x", "OUTBOX_QUEUE_URL": "x", "REFERENCE_MAX_ATTEMPTS": "0"},
 			wantErr: "REFERENCE_MAX_ATTEMPTS must be at least 1",
 		},
 		{
 			name:    "non-positive shutdown timeout",
-			env:     map[string]string{"DATABASE_URL": "x", "AUTH_ISSUER": "x", "AUTH_JWKS_URL": "x", "SHUTDOWN_TIMEOUT": "0s"},
+			env:     map[string]string{"DATABASE_URL": "x", "AUTH_ISSUER": "x", "AUTH_JWKS_URL": "x", "OUTBOX_QUEUE_URL": "x", "SHUTDOWN_TIMEOUT": "0s"},
 			wantErr: "SHUTDOWN_TIMEOUT must be positive",
 		},
 	}
@@ -149,7 +161,7 @@ func TestFromEnvReportsEveryProblemAtOnce(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error, got nil")
 	}
-	for _, want := range []string{"DATABASE_URL", "AUTH_ISSUER", "AUTH_JWKS_URL", "LOG_LEVEL"} {
+	for _, want := range []string{"DATABASE_URL", "AUTH_ISSUER", "AUTH_JWKS_URL", "OUTBOX_QUEUE_URL", "LOG_LEVEL"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error = %q, want it to mention %q", err, want)
 		}

@@ -23,6 +23,11 @@ func TestOptionsBuildAValidDependencyGraph(t *testing.T) {
 		AuthIssuer:   "http://127.0.0.1:8081/realms/wagering",
 		AuthJWKSURL:  "http://127.0.0.1:8081/realms/wagering/protocol/openid-connect/certs",
 		AuthAudience: "wagering-service",
+
+		AWSRegion:          "us-east-1",
+		SQSEndpoint:        "http://127.0.0.1:4566",
+		OutboxQueueURL:     "http://127.0.0.1:4566/000000000000/wager-events.fifo",
+		OutboxPollInterval: time.Second,
 	}
 
 	if err := fx.ValidateApp(Options(cfg)); err != nil {

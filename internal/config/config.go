@@ -23,6 +23,11 @@ type Config struct {
 	AuthIssuer   string
 	AuthJWKSURL  string
 	AuthAudience string
+
+	AWSRegion          string
+	SQSEndpoint        string
+	OutboxQueueURL     string
+	OutboxPollInterval time.Duration
 }
 
 func Load() (Config, error) {
@@ -38,6 +43,10 @@ func FromEnv(getenv func(string) string) (Config, error) {
 		AuthIssuer:   getenv("AUTH_ISSUER"),
 		AuthJWKSURL:  getenv("AUTH_JWKS_URL"),
 		AuthAudience: valueOr(getenv("AUTH_AUDIENCE"), "wagering-service"),
+
+		AWSRegion:      valueOr(getenv("AWS_REGION"), "us-east-1"),
+		SQSEndpoint:    getenv("SQS_ENDPOINT"),
+		OutboxQueueURL: getenv("OUTBOX_QUEUE_URL"),
 	}
 
 	var errs []error
@@ -46,6 +55,7 @@ func FromEnv(getenv func(string) string) (Config, error) {
 		{"DATABASE_URL", cfg.DatabaseURL},
 		{"AUTH_ISSUER", cfg.AuthIssuer},
 		{"AUTH_JWKS_URL", cfg.AuthJWKSURL},
+		{"OUTBOX_QUEUE_URL", cfg.OutboxQueueURL},
 	}
 	for _, r := range required {
 		if r.value == "" {
@@ -68,6 +78,7 @@ func FromEnv(getenv func(string) string) (Config, error) {
 		{"REFERENCE_POLL_INTERVAL", &cfg.ReferencePollInterval, time.Second},
 		{"REFERENCE_RETRY_BASE_DELAY", &cfg.ReferenceRetryBaseDelay, time.Second},
 		{"REFERENCE_RETRY_MAX_DELAY", &cfg.ReferenceRetryMaxDelay, time.Minute},
+		{"OUTBOX_POLL_INTERVAL", &cfg.OutboxPollInterval, 500 * time.Millisecond},
 	}
 	for _, d := range durations {
 		value, err := positiveDuration(d.name, getenv(d.name), d.fallback)

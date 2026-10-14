@@ -80,8 +80,29 @@ type OutboxMessage struct {
 	OccurredAt  time.Time
 }
 
+// OutboxRecord is a stored event read back for publication.
+type OutboxRecord struct {
+	Message  OutboxMessage
+	Sequence int64
+	Attempts int
+}
+
 type OutboxRepository interface {
 	Append(ctx context.Context, message OutboxMessage) error
+	// ClaimDue leases until leaseUntil the unpublished events of up to aggregates aggregates whose oldest
+	// unpublished event is due, at most perAggregate each, oldest first. An aggregate leased by another
+	// caller is skipped entirely, so its events are never sent out of order.
+	ClaimDue(ctx context.Context, now, leaseUntil time.Time, aggregates, perAggregate int) ([]OutboxRecord, error)
+	MarkPublished(ctx context.Context, id string, now time.Time) error
+	// Reschedule counts a failed publication and releases the event until next.
+	Reschedule(ctx context.Context, id string, next time.Time, lastError string) error
+	// Release returns claimed events that were not attempted, so they can be claimed again at once.
+	Release(ctx context.Context, ids []string) error
+}
+
+type EventPublisher interface {
+	// Publish may deliver the same message more than once; consumers deduplicate by its ID.
+	Publish(ctx context.Context, message OutboxMessage) error
 }
 
 type Clock interface {

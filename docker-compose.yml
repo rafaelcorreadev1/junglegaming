@@ -49,6 +49,22 @@ services:
       retries: 40
       start_period: 20s
 
+  localstack:
+    image: localstack/localstack:4.9
+    environment:
+      SERVICES: sqs
+    ports:
+      - "${LOCALSTACK_PORT:-4566}:4566"
+    volumes:
+      - ./deploy/localstack:/etc/localstack/init/ready.d:ro
+    healthcheck:
+      # Healthy only after the init script created the queues, not just when LocalStack answers.
+      test: ["CMD-SHELL", "awslocal sqs get-queue-url --queue-name wager-events.fifo >/dev/null 2>&1"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+      start_period: 10s
+
   app:
     build: .
     environment:
@@ -63,6 +79,12 @@ services:
       AUTH_ISSUER: http://localhost:${KEYCLOAK_PORT:-8081}/realms/wagering
       AUTH_JWKS_URL: http://keycloak:8080/realms/wagering/protocol/openid-connect/certs
       AUTH_AUDIENCE: wagering-service
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      SQS_ENDPOINT: http://localstack:4566
+      OUTBOX_QUEUE_URL: http://localstack:4566/000000000000/wager-events.fifo
+      OUTBOX_POLL_INTERVAL: ${OUTBOX_POLL_INTERVAL:-500ms}
     ports:
       - "${APP_PORT:-8080}:8080"
     depends_on:
@@ -71,6 +93,8 @@ services:
       migrate:
         condition: service_completed_successfully
       keycloak:
+        condition: service_healthy
+      localstack:
         condition: service_healthy
     stop_grace_period: 30s
 
