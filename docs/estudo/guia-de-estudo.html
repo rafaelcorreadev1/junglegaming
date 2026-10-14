@@ -171,7 +171,7 @@
   <p class="sub">O que foi construído em cada spec, por que foi feito assim e quais conceitos de Go aparecem, para quem vem de C#, Python e TypeScript.</p>
   <div class="meta">
     Repositório: github.com/rafaelcorreadev1/junglegaming<br>
-    Atualizado até a spec 06 · 13/10/2026
+    Atualizado até a spec 07 · 13/10/2026
   </div>
 </section>
 
@@ -199,7 +199,7 @@
       <tr><td>04</td><td>Schema e migrations</td><td class="status done">Concluída</td></tr>
       <tr><td>05</td><td>Persistência e transação SQL</td><td class="status done">Concluída</td></tr>
       <tr><td>06</td><td>Carteira: abertura, leitura, ledger paginado</td><td class="status done">Concluída</td></tr>
-      <tr><td>07</td><td>Operação: BET / WIN / LOSS e idempotência</td><td class="status todo">A fazer</td></tr>
+      <tr><td>07</td><td>Operação: BET / WIN / LOSS e idempotência</td><td class="status done">Concluída</td></tr>
       <tr><td>08</td><td>Reversões e referências pendentes</td><td class="status todo">A fazer</td></tr>
       <tr><td>09</td><td>Autenticação e autorização</td><td class="status todo">A fazer</td></tr>
       <tr><td>10</td><td>Outbox e eventos</td><td class="status todo">A fazer</td></tr>
@@ -1735,6 +1735,248 @@ func (o *failingOutbox) Append(ctx context.Context, m application.OutboxMessage)
     <li><code>internal/application/list_ledger.go</code></li>
     <li><code>internal/infra/httpapi/errors.go</code> e <code>middleware.go</code></li>
     <li><code>internal/infra/httpapi/wallets_test.go</code></li>
+  </ol>
+</section>
+
+<!-- ============================ SPEC 07 ============================ -->
+<section class="chapter">
+  <div class="chapter-label">Spec 07</div>
+  <h1>Operações e idempotência</h1>
+  <p class="lead">O coração do desafio: um único caso de uso que aplica cada operação exatamente uma vez, mesmo que ela chegue 50 vezes ao mesmo tempo, em instâncias diferentes, ou de novo depois de um reinício.</p>
+
+  <h2>1. O que a spec pedia</h2>
+  <ul>
+    <li><code>POST /wagering/transactions</code> com o header <code>Idempotency-Key</code> obrigatório, e duas consultas de transação.</li>
+    <li>Idempotência gravada no banco, com hash determinístico dos campos de negócio.</li>
+    <li>Mesma chave e mesmo conteúdo: devolve o resultado original. Mesma chave e conteúdo diferente: conflito.</li>
+    <li>A mesma operação <code>(providerId, externalTransactionId)</code> não pode ser reaplicada com outra chave.</li>
+    <li>Replay devolve o saldo observado no processamento original.</li>
+    <li>Duas apostas de 80 sobre 100, ao mesmo tempo: uma processada, uma rejeitada, saldo 20, um débito.</li>
+  </ul>
+
+  <h2>2. O que foi construído</h2>
+  <table>
+    <thead><tr><th>Arquivo</th><th>Conteúdo</th></tr></thead>
+    <tbody>
+      <tr><td><code>application/process_wager_transaction.go</code></td><td>O caso de uso <code>ProcessWagerTransaction</code></td></tr>
+      <tr><td><code>application/payload_hash.go</code></td><td>O hash do payload</td></tr>
+      <tr><td><code>application/get_wager_transaction.go</code></td><td>Consulta por ID interno e por ID externo</td></tr>
+      <tr><td><code>infra/httpapi/wagering.go</code></td><td>Os três handlers e o contrato JSON</td></tr>
+    </tbody>
+  </table>
+  <p>O domínio não mudou: <code>ApplyWager</code> da spec 03 já decidia tudo. Esta spec cuida do que fica em volta: achar duplicata, travar, gravar.</p>
+
+  <h2>3. O que é idempotência</h2>
+  <p>Uma operação é idempotente quando executá-la duas vezes tem o mesmo efeito de executá-la uma. Redes falham: o provedor manda uma aposta, não recebe a resposta e manda de novo. O saldo só pode ser debitado uma vez, e as duas respostas precisam ser iguais.</p>
+  <p>Para isso cada requisição traz uma <strong>chave de idempotência</strong>, e o servidor guarda, junto com a transação, um <strong>hash do conteúdo</strong>.</p>
+  <table>
+    <thead><tr><th>Chegou</th><th>Resposta</th></tr></thead>
+    <tbody>
+      <tr><td>Chave nova, operação nova</td><td>Processa</td></tr>
+      <tr><td>Mesma chave, mesmo hash</td><td>Resultado gravado, <code>idempotentReplay: true</code></td></tr>
+      <tr><td>Mesma chave, hash diferente</td><td><code>409 IDEMPOTENCY_KEY_CONFLICT</code></td></tr>
+      <tr><td>Chave nova, mas <code>externalTransactionId</code> já usado</td><td><code>409 EXTERNAL_TRANSACTION_CONFLICT</code></td></tr>
+    </tbody>
+  </table>
+  <p>O hash existe por causa da terceira linha: sem ele, um cliente com bug reutilizando a chave receberia como resposta o resultado de outra operação, sem perceber.</p>
+
+  <h2>4. O hash do payload</h2>
+<pre><code>func payloadHash(in ProcessWagerInput) (string, error) {
+    fields := map[string]any{
+        "providerId":            in.ProviderID,
+        "externalTransactionId": in.ExternalTransactionID,
+        "playerId":              in.PlayerID,
+        "walletId":              in.WalletID,
+        "roundId":               in.RoundID,
+        "gameId":                in.GameID,
+        "kind":                  in.Kind,
+        "money": map[string]string{"amount": in.Money.Amount(), "currency": in.Money.Currency()},
+    }
+    if in.ReferenceExternalTransactionID != "" {
+        fields["referenceExternalTransactionId"] = in.ReferenceExternalTransactionID
+    }
+
+    canonical, err := json.Marshal(fields)
+    ...
+    sum := sha256.Sum256(canonical)
+    return hex.EncodeToString(sum[:]), nil
+}</code></pre>
+  <ul>
+    <li><strong>JSON canônico:</strong> a mesma informação precisa virar sempre os mesmos bytes. <code>{"a":1,"b":2}</code> e <code>{"b":2,"a":1}</code> são o mesmo objeto, mas dariam hashes diferentes. O <code>encoding/json</code> escreve as chaves de um <code>map</code> em ordem alfabética, e é isso que torna a saída canônica.</li>
+    <li><strong>Normalização:</strong> <code>in.Money.Amount()</code> devolve sempre duas casas. <code>"25"</code>, <code>"25.0"</code> e <code>"25.00"</code> geram o mesmo hash.</li>
+    <li><strong>Fora do hash:</strong> a chave de idempotência e o correlation ID. São do transporte, não da operação. Por isso HTTP e SQS geram o mesmo hash para o mesmo conteúdo.</li>
+    <li><code>sha256.Sum256</code> devolve um array de 32 bytes; <code>sum[:]</code> o transforma em slice para o <code>hex</code>.</li>
+  </ul>
+  <p>Um teste fixa o hash da aposta do enunciado em um valor calculado por fora (<code>sha256sum</code>). Se alguém mudar o algoritmo, o teste falha: mudar o hash invalidaria todos os registros já gravados.</p>
+
+  <h2>5. O caso de uso, passo a passo</h2>
+  <ol class="flow">
+    <li>Valida a entrada e calcula o hash.</li>
+    <li>Abre a transação SQL.</li>
+    <li><code>GetForUpdate</code> na carteira: trava a linha.</li>
+    <li>Procura duplicata: pela chave, depois pelo ID externo.</li>
+    <li>Resolve a referência, se houver.</li>
+    <li><code>domain.ApplyWager</code> decide: processa, rejeita ou espera.</li>
+    <li>Grava a transação. Se o saldo mudou, grava saldo e lançamento.</li>
+    <li>Grava os eventos na outbox.</li>
+    <li>Commit.</li>
+  </ol>
+  <p>Tudo entre os passos 2 e 9 é uma transação só. Uma rejeição de negócio também percorre o caminho inteiro: é gravada como <code>REJECTED</code>, gera evento e pode ser devolvida igual em um replay.</p>
+
+  <h3>Por que o lock vem antes da checagem de duplicata</h3>
+  <table>
+    <thead><tr><th>Instante</th><th>Requisição A</th><th>Requisição B (idêntica)</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td>Trava a carteira</td><td></td></tr>
+      <tr><td>2</td><td>Duplicata? Não</td><td>Tenta travar: <strong>espera</strong></td></tr>
+      <tr><td>3</td><td>Debita, grava, commit</td><td></td></tr>
+      <tr><td>4</td><td></td><td>Trava a carteira</td></tr>
+      <tr><td>5</td><td></td><td>Duplicata? <strong>Sim</strong>: devolve o resultado de A</td></tr>
+    </tbody>
+  </table>
+  <p>Com a ordem invertida, as duas perguntariam "já existe?" antes de qualquer uma gravar, as duas ouviriam "não", e as duas tentariam debitar.</p>
+
+  <h3>Quando o lock não basta</h3>
+  <p>O lock é por carteira. Se a mesma chave chegar com <code>walletId</code> diferentes, cada requisição trava uma carteira e nenhuma espera a outra. Quem decide é o <code>UNIQUE (provider_id, idempotency_key)</code> da spec 04:</p>
+<pre><code>for attempt := 1; ; attempt++ {
+    err = uc.tx.WithinTx(ctx, func(ctx context.Context) error { ... })
+    if !lostDuplicateRace(err) || attempt == maxProcessAttempts {
+        break
+    }
+}</code></pre>
+  <ol class="flow">
+    <li>O <code>INSERT</code> perdedor viola o <code>UNIQUE</code>.</li>
+    <li>O repositório devolve <code>ErrDuplicateIdempotencyKey</code> e a transação inteira sofre rollback.</li>
+    <li>O caso de uso tenta de novo, em uma transação nova.</li>
+    <li>Agora a checagem de duplicata encontra a linha: replay ou conflito.</li>
+  </ol>
+  <p>É a regra da spec 05 em uso: depois de uma violação de constraint, a transação está abortada, então não se continua nela.</p>
+  <div class="note">
+    <p><strong>Duas camadas.</strong> O lock resolve o caso comum sem erro nenhum. A constraint resolve o caso que o lock não cobre. Nenhuma das duas depende de memória do processo, então funciona igual com três instâncias.</p>
+  </div>
+
+  <h2>6. O saldo do replay</h2>
+  <p>A coluna <code>result_balance_minor</code> guarda o saldo que a operação observou. O replay lê esse valor, não o saldo atual da carteira.</p>
+  <table>
+    <thead><tr><th>Passo</th><th>Saldo da carteira</th><th>Resposta</th></tr></thead>
+    <tbody>
+      <tr><td>Aposta de 25.00</td><td>975.00</td><td><code>balance: 975.00</code></td></tr>
+      <tr><td>Outra aposta de 100.00</td><td>875.00</td><td></td></tr>
+      <tr><td>Ganho de 500.00</td><td>1375.00</td><td></td></tr>
+      <tr><td>Replay da primeira aposta</td><td>1375.00</td><td><code>balance: 975.00</code>, <code>idempotentReplay: true</code></td></tr>
+    </tbody>
+  </table>
+
+  <h2>7. Contrato HTTP</h2>
+  <table>
+    <thead><tr><th>Situação</th><th>HTTP</th><th>Corpo</th></tr></thead>
+    <tbody>
+      <tr><td>Processada</td><td>200</td><td><code>status: PROCESSED</code>, <code>balance</code></td></tr>
+      <tr><td>Rejeição de negócio</td><td>422</td><td><code>status: REJECTED</code>, <code>failureCode</code>, <code>balance</code></td></tr>
+      <tr><td>Aguardando referência</td><td>202</td><td><code>status: PENDING_REFERENCE</code></td></tr>
+      <tr><td>Conflito de chave ou de operação</td><td>409</td><td><code>error.code</code></td></tr>
+      <tr><td>Entrada inválida</td><td>400</td><td><code>error.code</code>, <code>field</code></td></tr>
+      <tr><td>Carteira inexistente</td><td>404</td><td><code>error.code</code></td></tr>
+      <tr><td>Banco indisponível</td><td>503 + <code>Retry-After</code></td><td><code>error.code</code></td></tr>
+    </tbody>
+  </table>
+  <div class="warn">
+    <p><strong>400 × 422.</strong> <code>400</code> é entrada corrigível: nada é gravado e o provedor pode reenviar com a mesma chave depois de corrigir. <code>422</code> é resultado definitivo: a transação foi gravada como <code>REJECTED</code>, e reenviar devolve a mesma rejeição.</p>
+  </div>
+<pre><code>func statusFor(status domain.TransactionStatus) int {
+    switch status {
+    case domain.StatusProcessed:
+        return http.StatusOK
+    case domain.StatusRejected, domain.StatusFailed:
+        return http.StatusUnprocessableEntity
+    default:
+        return http.StatusAccepted
+    }
+}</code></pre>
+  <p>O replay usa a mesma função, então devolve o mesmo código HTTP do original.</p>
+<pre><code>Balance *domain.Money `json:"balance,omitempty"`</code></pre>
+  <p>Ponteiro com <code>omitempty</code>: quando não há saldo observado (operação aguardando referência), o campo não aparece no JSON.</p>
+
+  <h2>8. Testes de concorrência</h2>
+<pre><code>results := make(chan *httptest.ResponseRecorder, requests)
+var wg sync.WaitGroup
+for range requests {
+    wg.Go(func() { results &lt;- env.send("provider-a:transaction-123", bet) })
+}
+wg.Wait()
+close(results)</code></pre>
+  <ul>
+    <li>Cinquenta goroutines enviam a mesma aposta. Cada uma escreve a resposta em um channel com espaço para 50 (<em>buffered</em>), então nenhuma fica bloqueada ao enviar.</li>
+    <li>Depois de <code>close</code>, o <code>for response := range results</code> lê o que ficou no channel e termina.</li>
+    <li>O teste exige: 50 respostas <code>200</code>, um único <code>transactionId</code>, exatamente uma com <code>idempotentReplay: false</code> e um débito no ledger.</li>
+  </ul>
+  <h3>Simulando outra instância</h3>
+  <p>A corrida entre carteiras diferentes depende de milissegundos: não dá para reproduzir só disparando goroutines. O teste a força com um repositório falso que, no primeiro <code>Insert</code>, grava antes uma transação "gêmea" por outra conexão:</p>
+<pre><code>func (r *racingWagers) Insert(ctx context.Context, tx *domain.WagerTransaction) error {
+    if !r.raced {
+        r.raced = true
+        // context.Background() não carrega transação: a gêmea é confirmada em outra conexão
+        postgres.NewWagerTransactionRepository(r.pool).Insert(context.Background(), r.twin(tx))
+    }
+    return r.WagerTransactionRepository.Insert(ctx, tx)
+}</code></pre>
+  <p>O <code>Insert</code> verdadeiro então viola o <code>UNIQUE</code>. O teste confere que a tentativa perdedora foi desfeita por inteiro (saldo intacto, nenhum lançamento, nenhum evento) e que o resultado final é replay ou conflito.</p>
+  <p>Ao escrever esse teste apareceu um detalhe do PostgreSQL: a gêmea na <strong>mesma</strong> carteira ficaria travada para sempre. Inserir uma linha com chave estrangeira pede um lock leve na linha referenciada, e o <code>FOR UPDATE</code> bloqueia até esse. Ou seja, com o lock da carteira preso, nenhuma outra transação consegue nem inserir uma operação para ela.</p>
+
+  <h2>9. Como foi verificado</h2>
+  <table>
+    <thead><tr><th>Verificação</th><th>Resultado</th></tr></thead>
+    <tbody>
+      <tr><td>Mesma aposta 50 vezes em paralelo</td><td>Um débito; saldo 975.00, versão 2</td></tr>
+      <tr><td>Duas apostas de 80.00 sobre 100.00 em paralelo</td><td>Uma <code>PROCESSED</code>, uma <code>REJECTED</code>/<code>INSUFFICIENT_FUNDS</code>; saldo 20.00; um débito</td></tr>
+      <tr><td>Reenvio das duas</td><td>Mesmos resultados, mesmo saldo, nada novo gravado</td></tr>
+      <tr><td>Replay após outras movimentações</td><td>Devolve 975.00 com a carteira em 1375.00</td></tr>
+      <tr><td>Mesma chave com 6 conteúdos diferentes</td><td><code>409</code> em todos</td></tr>
+      <tr><td>5 carteiras, 10 apostas simultâneas cada</td><td>Todas com 90.00</td></tr>
+      <tr><td>19 entradas inválidas</td><td><code>400</code> ou <code>404</code>; nenhuma transação gravada</td></tr>
+      <tr><td><code>curl</code> no Compose, com reinício da aplicação</td><td>Replay continua devolvendo o resultado original</td></tr>
+      <tr><td><code>go test -race</code>, concorrência repetida 5 vezes</td><td>Passou</td></tr>
+    </tbody>
+  </table>
+  <p>Os testes usam várias conexões dentro de um processo. A prova com três processos independentes é da spec 15.</p>
+  <div class="warn">
+    <p><strong>Ainda sem autenticação.</strong> Hoje qualquer chamador informa qualquer <code>providerId</code>. A spec 09 amarra o <code>providerId</code> ao token.</p>
+  </div>
+
+  <h2>10. Perguntas de revisão</h2>
+  <dl class="qa">
+    <dt>Para que serve o hash, se já existe a chave de idempotência?</dt>
+    <dd>Para detectar a mesma chave com conteúdo diferente. Sem ele, o servidor devolveria o resultado de outra operação.</dd>
+
+    <dt>O que torna o JSON canônico?</dt>
+    <dd>Chaves em ordem fixa (alfabética) e valor monetário normalizado. A mesma operação gera sempre os mesmos bytes.</dd>
+
+    <dt>Por que a chave de idempotência não entra no hash?</dt>
+    <dd>Ela é do transporte. O hash descreve a operação, e precisa ser igual por HTTP e por SQS.</dd>
+
+    <dt>Por que travar a carteira antes de procurar duplicata?</dt>
+    <dd>Para que a segunda requisição idêntica só procure depois que a primeira gravou.</dd>
+
+    <dt>O que acontece quando a mesma chave chega para carteiras diferentes ao mesmo tempo?</dt>
+    <dd>O lock não serializa. O <code>UNIQUE</code> recusa o segundo <code>INSERT</code>, a transação é desfeita e a nova tentativa encontra a linha.</dd>
+
+    <dt>De onde vem o saldo devolvido em um replay?</dt>
+    <dd>Da coluna <code>result_balance_minor</code> da transação, gravada no processamento original.</dd>
+
+    <dt>Aposta sem saldo responde 400 ou 422? Por quê?</dt>
+    <dd><code>422</code>. É um resultado de negócio definitivo, gravado como <code>REJECTED</code>. <code>400</code> é entrada malformada, que não é gravada.</dd>
+
+    <dt>A idempotência sobrevive a um reinício?</dt>
+    <dd>Sim. Chave, hash e resultado estão no PostgreSQL; nada fica em memória.</dd>
+  </dl>
+
+  <h3>Ordem de leitura do código</h3>
+  <ol>
+    <li><code>internal/application/payload_hash.go</code> e seu teste</li>
+    <li><code>internal/application/process_wager_transaction.go</code>: <code>Execute</code>, depois <code>process</code>, depois <code>findDuplicate</code></li>
+    <li><code>internal/infra/httpapi/wagering.go</code></li>
+    <li><code>internal/infra/httpapi/wagering_test.go</code>: os dois testes com <code>InParallel</code> no nome</li>
+    <li><code>internal/application/process_wager_transaction_test.go</code></li>
   </ol>
 </section>
 
