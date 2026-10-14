@@ -238,3 +238,38 @@ func TestPrincipalVisibility(t *testing.T) {
 		}
 	}
 }
+
+func TestCheckKeysRequiresAReachableNonEmptyKeySet(t *testing.T) {
+	cases := map[string]struct {
+		status  int
+		body    string
+		wantErr bool
+	}{
+		"keys":        {http.StatusOK, `{"keys":[{"kty":"RSA"}]}`, false},
+		"no keys":     {http.StatusOK, `{"keys":[]}`, true},
+		"not json":    {http.StatusOK, `<html>`, true},
+		"server down": {http.StatusInternalServerError, ``, true},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+			verifier, err := NewVerifier(Config{Issuer: "issuer", JWKSURL: server.URL, Audience: "aud"})
+			if err != nil {
+				t.Fatalf("NewVerifier: %v", err)
+			}
+			defer verifier.Close()
+			if err := verifier.CheckKeys(context.Background()); (err != nil) != tc.wantErr {
+				t.Errorf("CheckKeys = %v, want error %v", err, tc.wantErr)
+			}
+		})
+	}
+
+	verifier, _ := NewVerifier(Config{Issuer: "issuer", JWKSURL: "http://127.0.0.1:1/certs", Audience: "aud"})
+	if err := verifier.CheckKeys(context.Background()); err == nil {
+		t.Error("an unreachable key server must fail the check")
+	}
+}

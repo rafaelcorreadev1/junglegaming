@@ -47,8 +47,9 @@ func Options(cfg config.Config) fx.Option {
 		),
 		// At the root, so every module that asks for these gets the instrumented version.
 		fx.Decorate(observability.InstrumentTxManager, observability.InstrumentPublisher),
-		httpapi.Module,
+		// Workers before HTTP: Fx stops in reverse order, so HTTP stops taking requests first and starts serving last.
 		worker.Module,
+		httpapi.Module,
 	)
 }
 

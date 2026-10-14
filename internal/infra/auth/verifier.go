@@ -2,13 +2,18 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 )
 
 var ErrInvalidToken = errors.New("invalid access token")
+
+const jwksTimeout = 10 * time.Second
 
 type Config struct {
 	Issuer   string
@@ -17,7 +22,10 @@ type Config struct {
 }
 
 type Verifier struct {
-	verifier *oidc.IDTokenVerifier
+	jwksURL   string
+	client    *http.Client
+	transport *http.Transport
+	verifier  *oidc.IDTokenVerifier
 }
 
 // NewVerifier fetches the keys lazily from JWKSURL and refetches them when a token is signed with an unknown key.
@@ -33,11 +41,44 @@ func NewVerifier(cfg Config) (*Verifier, error) {
 	}
 
 	// The key set keeps this context for its background fetches, so it must outlive any single request.
-	keys := oidc.NewRemoteKeySet(context.Background(), cfg.JWKSURL)
-	return &Verifier{verifier: oidc.NewVerifier(cfg.Issuer, keys, &oidc.Config{
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	client := &http.Client{Transport: transport, Timeout: jwksTimeout}
+	keys := oidc.NewRemoteKeySet(oidc.ClientContext(context.Background(), client), cfg.JWKSURL)
+	return &Verifier{jwksURL: cfg.JWKSURL, client: client, transport: transport, verifier: oidc.NewVerifier(cfg.Issuer, keys, &oidc.Config{
 		ClientID:             cfg.Audience,
 		SupportedSigningAlgs: []string{oidc.RS256},
 	})}, nil
+}
+
+// Close drops the idle connections to the key server; the verifier keeps working and reconnects if used again.
+func (v *Verifier) Close() {
+	v.transport.CloseIdleConnections()
+}
+
+// CheckKeys fetches the key set once, so an unreachable or empty JWKS stops the start instead of rejecting every token later.
+func (v *Verifier) CheckKeys(ctx context.Context) error {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, v.jwksURL, nil)
+	if err != nil {
+		return err
+	}
+	response, err := v.client.Do(request)
+	if err != nil {
+		return fmt.Errorf("fetch JWKS: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("fetch JWKS: status %d", response.StatusCode)
+	}
+	var set struct {
+		Keys []json.RawMessage `json:"keys"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&set); err != nil {
+		return fmt.Errorf("decode JWKS: %w", err)
+	}
+	if len(set.Keys) == 0 {
+		return errors.New("JWKS has no keys")
+	}
+	return nil
 }
 
 type accessTokenClaims struct {

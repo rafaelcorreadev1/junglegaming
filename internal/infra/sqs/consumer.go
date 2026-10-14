@@ -15,6 +15,7 @@ import (
 
 	"wagering-service/internal/application"
 	"wagering-service/internal/domain"
+	"wagering-service/internal/infra/lifecycle"
 	"wagering-service/internal/infra/observability"
 )
 
@@ -24,8 +25,6 @@ const (
 	maxFailureReasonLength = 256
 	// Calls made after handling (delete, release, dead-letter) run detached from shutdown, but not forever.
 	sqsCallTimeout = 5 * time.Second
-	// How long before the stop deadline in-flight messages are interrupted, leaving time to release them.
-	releaseMargin = 3 * time.Second
 )
 
 type WagerHandler interface {
@@ -94,44 +93,8 @@ func NewConsumer(
 		logger: logger.With("worker", "wager-consumer")}, nil
 }
 
-// Attach runs the consumer between the application's start and stop.
 func (c *Consumer) Attach(lc fx.Lifecycle) {
-	pollCtx, stopPolling := context.WithCancel(context.Background())
-	workCtx, abortWork := context.WithCancel(context.Background())
-	done := make(chan struct{})
-
-	lc.Append(fx.Hook{
-		OnStart: func(context.Context) error {
-			go func() {
-				defer close(done)
-				c.Run(pollCtx, workCtx)
-			}()
-			return nil
-		},
-		OnStop: func(stopCtx context.Context) error {
-			stopPolling()
-			graceCtx := stopCtx
-			if deadline, ok := stopCtx.Deadline(); ok {
-				var cancel context.CancelFunc
-				graceCtx, cancel = context.WithDeadline(stopCtx, deadline.Add(-releaseMargin))
-				defer cancel()
-			}
-			select {
-			case <-done:
-				return nil
-			case <-graceCtx.Done():
-			}
-
-			// Out of time: interrupted messages roll back and are made visible again for another instance.
-			abortWork()
-			select {
-			case <-done:
-				return nil
-			case <-stopCtx.Done():
-				return stopCtx.Err()
-			}
-		},
-	})
+	lifecycle.Attach(lc, c.Run)
 }
 
 // Run receives until pollCtx is cancelled; workCtx bounds the handling of messages already received.

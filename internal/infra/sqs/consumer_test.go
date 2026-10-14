@@ -18,6 +18,7 @@ import (
 	"go.uber.org/fx/fxtest"
 
 	"wagering-service/internal/application"
+	"wagering-service/internal/infra/lifecycle"
 	"wagering-service/internal/infra/observability"
 	"wagering-service/internal/infra/system"
 )
@@ -346,7 +347,7 @@ func TestStopReleasesAMessageThatCannotFinishInTime(t *testing.T) {
 		t.Fatal("the consumer never handled the message")
 	}
 
-	stopCtx, cancel := context.WithTimeout(context.Background(), releaseMargin+time.Second)
+	stopCtx, cancel := context.WithTimeout(context.Background(), lifecycle.ReleaseMargin+time.Second)
 	defer cancel()
 	if err := lc.Stop(stopCtx); err != nil {
 		t.Fatalf("stop: %v", err)
@@ -379,7 +380,7 @@ func TestStopFinishesWorkThatEndsInTime(t *testing.T) {
 	c.Attach(lc)
 	lc.RequireStart()
 	<-started
-	stopCtx, cancel := context.WithTimeout(context.Background(), releaseMargin+5*time.Second)
+	stopCtx, cancel := context.WithTimeout(context.Background(), lifecycle.ReleaseMargin+5*time.Second)
 	defer cancel()
 	if err := lc.Stop(stopCtx); err != nil {
 		t.Fatalf("stop: %v", err)

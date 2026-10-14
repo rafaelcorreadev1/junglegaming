@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -40,12 +41,12 @@ func (j *scriptedJob) count() int {
 
 func newTestPoller(job *scriptedJob, interval time.Duration) *Poller {
 	job.called = make(chan struct{}, 100)
-	return NewPoller("test", job.run, interval, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return NewPoller("test", job.run, interval, time.Minute, slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
 func TestDrainKeepsGoingWhileTheJobReportsMore(t *testing.T) {
 	job := &scriptedJob{more: []bool{true, true, false, true}}
-	newTestPoller(job, time.Hour).drain(context.Background())
+	newTestPoller(job, time.Hour).drain(context.Background(), context.Background())
 
 	if job.count() != 3 {
 		t.Errorf("job ran %d times, want 3", job.count())
@@ -54,7 +55,7 @@ func TestDrainKeepsGoingWhileTheJobReportsMore(t *testing.T) {
 
 func TestDrainStopsAfterAnErrorInsteadOfSpinning(t *testing.T) {
 	job := &scriptedJob{more: []bool{true, true}, err: errors.New("database is down")}
-	newTestPoller(job, time.Hour).drain(context.Background())
+	newTestPoller(job, time.Hour).drain(context.Background(), context.Background())
 
 	if job.count() != 1 {
 		t.Errorf("job ran %d times after an error, want 1", job.count())
@@ -68,7 +69,7 @@ func TestRunPollsOnEveryTickAndStopsWhenCancelled(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		poller.Run(ctx)
+		poller.Run(ctx, context.Background())
 	}()
 
 	for range 3 {
@@ -105,5 +106,51 @@ func TestAttachStartsWithTheAppAndStopsWithIt(t *testing.T) {
 	time.Sleep(30 * time.Millisecond)
 	if job.count() != calls {
 		t.Errorf("the job ran %d more times after stop", job.count()-calls)
+	}
+}
+
+func TestARoundIsCutAtItsTimeout(t *testing.T) {
+	var sawDeadline atomic.Bool
+	job := func(ctx context.Context) (bool, error) {
+		<-ctx.Done()
+		sawDeadline.Store(errors.Is(ctx.Err(), context.DeadlineExceeded))
+		return true, ctx.Err()
+	}
+	poller := NewPoller("test", job, time.Hour, 50*time.Millisecond, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	start := time.Now()
+	poller.drain(context.Background(), context.Background())
+	if elapsed := time.Since(start); elapsed > 2*time.Second || !sawDeadline.Load() {
+		t.Errorf("round took %v, deadline seen = %v; want it cut after 50ms", elapsed, sawDeadline.Load())
+	}
+}
+
+func TestStopLetsTheRoundInProgressFinishAndStartsNoOther(t *testing.T) {
+	started := make(chan struct{}, 10)
+	var finished, interrupted atomic.Int32
+	job := func(ctx context.Context) (bool, error) {
+		started <- struct{}{}
+		select {
+		case <-time.After(300 * time.Millisecond):
+			finished.Add(1)
+		case <-ctx.Done():
+			interrupted.Add(1)
+		}
+		// Asks for another round right away, which the stop must refuse.
+		return true, nil
+	}
+	poller := NewPoller("test", job, time.Hour, time.Minute, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	lc := fxtest.NewLifecycle(t)
+	poller.Attach(lc)
+	lc.RequireStart()
+	<-started
+
+	stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := lc.Stop(stopCtx); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if finished.Load() != 1 || interrupted.Load() != 0 || len(started) != 0 {
+		t.Errorf("finished %d, interrupted %d, rounds started after stop %d; want 1, 0, 0", finished.Load(), interrupted.Load(), len(started))
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -21,6 +22,8 @@ type ClientConfig struct {
 	Region string
 	// Endpoint points the client at LocalStack; empty means the real AWS endpoint.
 	Endpoint string
+	// HTTPClient is optional; the SDK default is used when nil.
+	HTTPClient *http.Client
 }
 
 var Module = fx.Module("sqs",
@@ -29,10 +32,27 @@ var Module = fx.Module("sqs",
 		fx.Annotate(newPublisher, fx.As(new(application.EventPublisher))),
 		newConsumer,
 	),
+	fx.Invoke(checkQueuesOnStart),
 )
 
-func newClient(cfg config.Config) (*sqs.Client, error) {
-	return NewClient(context.Background(), ClientConfig{Region: cfg.AWSRegion, Endpoint: cfg.SQSEndpoint})
+// checkQueuesOnStart refuses to start when a queue is missing, instead of failing on the first message.
+func checkQueuesOnStart(lc fx.Lifecycle, client *sqs.Client, cfg config.Config) {
+	probe := NewProbe(client, cfg)
+	lc.Append(fx.StartHook(func(ctx context.Context) error {
+		if err := probe.Ping(ctx); err != nil {
+			return fmt.Errorf("check sqs queues: %w", err)
+		}
+		return nil
+	}))
+}
+
+func newClient(lc fx.Lifecycle, cfg config.Config) (*sqs.Client, error) {
+	// A transport of our own, so stopping can close its idle keep-alive connections and their goroutines.
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	lc.Append(fx.StopHook(transport.CloseIdleConnections))
+	return NewClient(context.Background(), ClientConfig{
+		Region: cfg.AWSRegion, Endpoint: cfg.SQSEndpoint, HTTPClient: &http.Client{Transport: transport},
+	})
 }
 
 func newPublisher(client *sqs.Client, cfg config.Config) (*Publisher, error) {
@@ -56,7 +76,11 @@ func newConsumer(
 
 func NewClient(ctx context.Context, cfg ClientConfig) (*sqs.Client, error) {
 	// Credentials come from the default chain (AWS_ACCESS_KEY_ID and friends, profiles, instance roles).
-	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(cfg.Region))
+	opts := []func(*awsconfig.LoadOptions) error{awsconfig.WithRegion(cfg.Region)}
+	if cfg.HTTPClient != nil {
+		opts = append(opts, awsconfig.WithHTTPClient(cfg.HTTPClient))
+	}
+	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("load aws config: %w", err)
 	}

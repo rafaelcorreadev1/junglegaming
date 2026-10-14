@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"go.uber.org/fx"
+
+	"wagering-service/internal/infra/lifecycle"
 )
 
 // Job runs one round of background work; more reports that work may still be due right away.
@@ -15,63 +17,49 @@ type Poller struct {
 	name     string
 	job      Job
 	interval time.Duration
-	logger   *slog.Logger
+	// roundTimeout bounds one round, so a hung dependency cannot hold the worker forever.
+	roundTimeout time.Duration
+	logger       *slog.Logger
 }
 
-func NewPoller(name string, job Job, interval time.Duration, logger *slog.Logger) *Poller {
-	return &Poller{name: name, job: job, interval: interval, logger: logger.With("worker", name)}
+func NewPoller(name string, job Job, interval, roundTimeout time.Duration, logger *slog.Logger) *Poller {
+	return &Poller{name: name, job: job, interval: interval, roundTimeout: roundTimeout, logger: logger.With("worker", name)}
 }
 
-// Attach runs the poller between the application's start and stop.
 func (p *Poller) Attach(lc fx.Lifecycle) {
-	// The OnStart context expires when startup ends, so the loop needs one of its own.
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-
-	lc.Append(fx.Hook{
-		OnStart: func(context.Context) error {
-			go func() {
-				defer close(done)
-				p.Run(ctx)
-			}()
-			return nil
-		},
-		OnStop: func(stopCtx context.Context) error {
-			cancel()
-			select {
-			case <-done:
-				return nil
-			case <-stopCtx.Done():
-				return stopCtx.Err()
-			}
-		},
-	})
+	lifecycle.Attach(lc, p.Run)
 }
 
-// Run blocks until ctx is cancelled.
-func (p *Poller) Run(ctx context.Context) {
+// Run starts no new round once pollCtx is cancelled; workCtx interrupts the round in progress.
+func (p *Poller) Run(pollCtx, workCtx context.Context) {
 	ticker := time.NewTicker(p.interval)
 	defer ticker.Stop()
 
 	for {
-		p.drain(ctx)
+		p.drain(pollCtx, workCtx)
 		select {
-		case <-ctx.Done():
+		case <-pollCtx.Done():
 			return
 		case <-ticker.C:
 		}
 	}
 }
 
-func (p *Poller) drain(ctx context.Context) {
-	for ctx.Err() == nil {
-		more, err := p.job(ctx)
-		if err != nil && ctx.Err() == nil {
-			p.logger.ErrorContext(ctx, "background job failed", "error", err)
+func (p *Poller) drain(pollCtx, workCtx context.Context) {
+	for pollCtx.Err() == nil {
+		more, err := p.round(workCtx)
+		if err != nil && workCtx.Err() == nil {
+			p.logger.ErrorContext(workCtx, "background job failed", "error", err)
 		}
 		// After an error, wait for the next tick instead of spinning against a broken dependency.
 		if err != nil || !more {
 			return
 		}
 	}
+}
+
+func (p *Poller) round(workCtx context.Context) (bool, error) {
+	ctx, cancel := context.WithTimeout(workCtx, p.roundTimeout)
+	defer cancel()
+	return p.job(ctx)
 }

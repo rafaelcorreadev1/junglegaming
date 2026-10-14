@@ -34,15 +34,22 @@ func startReferenceResolver(
 		}
 		return result.Claimed == policy.BatchSize, err
 	}
-	NewPoller("reference-resolver", job, cfg.ReferencePollInterval, logger).Attach(lc)
+	// A round longer than the lease could overlap with another instance that took the same work over.
+	NewPoller("reference-resolver", job, cfg.ReferencePollInterval, policy.Lease, logger).Attach(lc)
 }
 
-func startOutboxPublisher(lc fx.Lifecycle, publisher *application.PublishOutbox, cfg config.Config, logger *slog.Logger) {
+func startOutboxPublisher(
+	lc fx.Lifecycle,
+	publisher *application.PublishOutbox,
+	policy application.OutboxPolicy,
+	cfg config.Config,
+	logger *slog.Logger,
+) {
 	job := func(ctx context.Context) (bool, error) {
 		_, full, err := publisher.Execute(ctx)
 		return full, err
 	}
-	NewPoller("outbox-publisher", job, cfg.OutboxPollInterval, logger).Attach(lc)
+	NewPoller("outbox-publisher", job, cfg.OutboxPollInterval, policy.Lease, logger).Attach(lc)
 }
 
 func startWagerConsumer(lc fx.Lifecycle, consumer *sqs.Consumer) {

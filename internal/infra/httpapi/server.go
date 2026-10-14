@@ -104,6 +104,11 @@ func NewServer(lc fx.Lifecycle, cfg config.Config, handler http.Handler, logger 
 	return server
 }
 
-func newVerifier(cfg config.Config) (*auth.Verifier, error) {
-	return auth.NewVerifier(auth.Config{Issuer: cfg.AuthIssuer, JWKSURL: cfg.AuthJWKSURL, Audience: cfg.AuthAudience})
+func newVerifier(lc fx.Lifecycle, cfg config.Config) (*auth.Verifier, error) {
+	verifier, err := auth.NewVerifier(auth.Config{Issuer: cfg.AuthIssuer, JWKSURL: cfg.AuthJWKSURL, Audience: cfg.AuthAudience})
+	if err != nil {
+		return nil, err
+	}
+	lc.Append(fx.StartStopHook(verifier.CheckKeys, verifier.Close))
+	return verifier, nil
 }

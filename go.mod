@@ -13,6 +13,7 @@ require (
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/prometheus/client_golang v1.25.0
 	go.uber.org/fx v1.24.0
+	go.uber.org/goleak v1.3.0
 )
 
 require (
