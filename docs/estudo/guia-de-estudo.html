@@ -171,7 +171,7 @@
   <p class="sub">O que foi construído em cada spec, por que foi feito assim e quais conceitos de Go aparecem, para quem vem de C#, Python e TypeScript.</p>
   <div class="meta">
     Repositório: github.com/rafaelcorreadev1/junglegaming<br>
-    Atualizado até a spec 11 · 13/10/2026
+    Atualizado até a spec 12 · 13/10/2026
   </div>
 </section>
 
@@ -204,7 +204,7 @@
       <tr><td>09</td><td>Autenticação e autorização</td><td class="status done">Concluída</td></tr>
       <tr><td>10</td><td>Outbox e eventos</td><td class="status done">Concluída</td></tr>
       <tr><td>11</td><td>Consumidor SQS, inbox e DLQ</td><td class="status done">Concluída</td></tr>
-      <tr><td>12</td><td>Reconciliação</td><td class="status todo">A fazer</td></tr>
+      <tr><td>12</td><td>Reconciliação</td><td class="status done">Concluída</td></tr>
       <tr><td>13</td><td>Observabilidade</td><td class="status todo">A fazer</td></tr>
       <tr><td>14</td><td>Ciclo de vida Fx e shutdown</td><td class="status todo">A fazer</td></tr>
       <tr><td>15</td><td>Testes de integração, concorrência e recuperação</td><td class="status todo">A fazer</td></tr>
@@ -2721,6 +2721,129 @@ RETURNING ...</code></pre>
     <li><code>internal/infra/sqs/consumer.go</code></li>
     <li><code>deploy/localstack/init-queues.sh</code></li>
     <li><code>internal/infra/sqs/consumer_integration_test.go</code></li>
+  </ol>
+</section>
+
+<!-- ============================ SPEC 12 ============================ -->
+<section class="chapter">
+  <div class="chapter-label">Spec 12</div>
+  <h1>Reconciliação</h1>
+  <p class="lead">O saldo da carteira é guardado numa coluna, e cada movimento também fica no ledger. Se tudo está certo, somar o ledger dá o saldo. A reconciliação faz essa conta sob demanda e avisa quando não bate, sem consertar nada.</p>
+
+  <h2>1. O que a spec pedia</h2>
+  <ul>
+    <li><code>POST /wallets/:walletId/reconciliation</code>, só para o serviço interno.</li>
+    <li>Saldo calculado = créditos − débitos do ledger, incluindo a abertura.</li>
+    <li><code>difference</code> = armazenado − calculado.</li>
+    <li>Saldo e ledger lidos numa visão consistente.</li>
+    <li>Divergência na resposta, no log e numa métrica. Nunca alterar o saldo.</li>
+  </ul>
+
+  <h2>2. O problema: duas leituras, dois instantes</h2>
+  <p>A reconciliação faz duas consultas: lê o saldo da carteira e soma o ledger. Enquanto isso, apostas continuam chegando. No nível de isolamento padrão do PostgreSQL, <strong>READ COMMITTED</strong>, cada comando enxerga o que estava confirmado quando <em>ele</em> começou:</p>
+  <ol class="flow">
+    <li>Reconciliação lê o saldo: 9904.00.</li>
+    <li>Uma aposta de 1.00 confirma: saldo 9903.00 e um lançamento novo no ledger.</li>
+    <li>Reconciliação soma o ledger: já inclui a aposta, dá 9903.00.</li>
+    <li>Resultado: diferença de 1.00. Uma divergência que não existe.</li>
+  </ol>
+  <p>Isso não é teoria: rodei o teste de concorrência com <code>READ COMMITTED</code> e ele acusou várias divergências falsas de exatamente 1.00, o valor de cada aposta.</p>
+
+  <h2>3. A solução: REPEATABLE READ</h2>
+  <p>Em <strong>REPEATABLE READ</strong>, a transação tira uma "foto" do banco na primeira consulta e todas as leituras seguintes enxergam essa mesma foto, mesmo que outros confirmem mudanças no meio.</p>
+  <table>
+    <thead><tr><th>Nível</th><th>Cada leitura vê</th><th>Uso aqui</th></tr></thead>
+    <tbody>
+      <tr><td><code>READ COMMITTED</code></td><td>O que estava confirmado quando o comando começou</td><td>Padrão de todas as operações; os locks de carteira cuidam da concorrência</td></tr>
+      <tr><td><code>REPEATABLE READ</code></td><td>O que estava confirmado na primeira consulta da transação</td><td>Reconciliação</td></tr>
+      <tr><td><code>SERIALIZABLE</code></td><td>Como se as transações rodassem uma de cada vez</td><td>Não usado</td></tr>
+    </tbody>
+  </table>
+<pre><code>func (m *TxManager) WithinSnapshot(ctx context.Context, fn func(ctx context.Context) error) error {
+    if inTx(ctx) {
+        return errors.New("snapshot requested inside another transaction")
+    }
+    return m.within(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, fn)
+}</code></pre>
+  <ul>
+    <li><code>READ ONLY</code>: qualquer escrita dentro dela é recusada pelo próprio banco. "Não altera o saldo" deixa de depender só de o código estar certo.</li>
+    <li>Dentro de outra transação seria erro silencioso: o isolamento já foi decidido pela transação de fora. Por isso recusa.</li>
+    <li>Ler em <code>REPEATABLE READ</code> não trava ninguém. O PostgreSQL guarda versões das linhas (MVCC), então as apostas seguem enquanto a reconciliação lê a foto antiga.</li>
+  </ul>
+  <div class="note"><strong>Alternativa válida:</strong> uma consulta só, juntando carteira e soma do ledger, também enxergaria um único instante, porque um comando sempre vê uma foto só. Escolhi a transação para manter cada repositório com sua consulta, e porque a spec pedia o isolamento explícito.</div>
+
+  <h2>4. A conta</h2>
+<pre><code>SELECT COALESCE(SUM(CASE direction WHEN 'CREDIT' THEN amount_minor ELSE -amount_minor END), 0)::bigint,
+       count(*)
+  FROM wallet_ledger_entries
+ WHERE wallet_id = $1</code></pre>
+  <ul>
+    <li>A abertura é um crédito no ledger (spec 06); por isso o exemplo do desafio tem <code>checkedEntries: 2</code>: abertura e aposta.</li>
+    <li><code>SUM</code> de <code>bigint</code> devolve <code>numeric</code>, que não estoura. O <code>::bigint</code> de volta falha se o total sair do limite, em vez de dar um número errado.</li>
+    <li><code>COALESCE(..., 0)</code>: sem lançamentos, <code>SUM</code> devolve <code>NULL</code>.</li>
+    <li>A diferença usa <code>Money.Sub</code>, que já aceita resultado negativo e confere a moeda.</li>
+  </ul>
+
+  <h2>5. Log e métrica sem sujar a aplicação</h2>
+  <p>O pacote <code>application</code> não conhece <code>slog</code> nem Prometheus. A reconciliação chama uma porta, e quem implementa decide como relatar:</p>
+<pre><code>type ReconciliationReporter interface {
+    Report(ctx context.Context, reconciliation Reconciliation)
+}</code></pre>
+  <p>A implementação em <code>observability</code> incrementa o contador <code>wagering_reconciliations_total</code> com o rótulo <code>result</code> (<code>consistent</code> ou <code>divergent</code>) e, na divergência, escreve um log <code>ERROR</code> com carteira, saldos e diferença.</p>
+  <table>
+    <thead><tr><th>Conceito Prometheus</th><th>O que é</th></tr></thead>
+    <tbody>
+      <tr><td>Contador (<em>counter</em>)</td><td>Só sobe; o que interessa é quanto subiu num intervalo</td></tr>
+      <tr><td>Rótulo (<em>label</em>)</td><td>Divide um contador em séries: <code>{result="divergent"}</code></td></tr>
+      <tr><td>Registro (<em>registry</em>)</td><td>Onde as métricas são cadastradas; <code>/metrics</code> publica o que está nele</td></tr>
+    </tbody>
+  </table>
+  <ul>
+    <li>As duas séries são criadas com 0 logo no início. Um alerta do tipo "aumentou nos últimos 5 minutos" precisa de um valor anterior para comparar.</li>
+    <li>O registro é próprio, não o global do pacote: cada teste cria um limpo e confere o valor exato.</li>
+    <li><code>GET /metrics</code> nasceu aqui, público como os health checks. A spec 13 acrescenta as outras métricas.</li>
+  </ul>
+
+  <h2>6. Como foi testado</h2>
+  <table>
+    <thead><tr><th>Cenário</th><th>Resultado verificado</th></tr></thead>
+    <tbody>
+      <tr><td>Exemplo do desafio: 1000.00 e aposta de 25.00</td><td>975.00 dos dois lados, diferença 0.00, 2 lançamentos; contador <code>consistent</code> = 1</td></tr>
+      <tr><td>Carteira aberta com zero</td><td>0 lançamentos, consistente</td></tr>
+      <tr><td>Saldo adulterado direto na tabela (+5.00 e −5.00)</td><td>Diferença 5.00 / −5.00, log <code>ERROR</code> com a carteira, contador <code>divergent</code> = 1, saldo intacto depois</td></tr>
+      <tr><td>4 escritores com 100 apostas e 2 reconciliadores em laço</td><td>Cerca de 650 reconciliações, nenhuma divergência</td></tr>
+      <tr><td>Mesmo teste com <code>READ COMMITTED</code></td><td>Várias divergências falsas de 1.00 (prova de que o teste pega o defeito)</td></tr>
+      <tr><td>Escrita dentro do snapshot; snapshot dentro de transação</td><td>As duas recusadas</td></tr>
+      <tr><td>Token de provedor, sem token, carteira inexistente, id inválido</td><td>403, 401, 404, 400</td></tr>
+    </tbody>
+  </table>
+  <ul>
+    <li>Ponta a ponta no Compose com Keycloak real: exemplo do desafio, adulteração pelo <code>psql</code>, contador e log conferidos.</li>
+    <li><code>go test -race</code> passa no container; cobertura de <code>internal/</code> em 90,2%.</li>
+  </ul>
+
+  <h2>7. Para fixar</h2>
+  <dl class="qa">
+    <dt>Por que <code>READ COMMITTED</code> dá divergência falsa?</dt>
+    <dd>Cada comando vê um instante diferente; uma aposta confirmada entre a leitura do saldo e a soma do ledger aparece só na segunda.</dd>
+
+    <dt>O <code>REPEATABLE READ</code> bloqueia as apostas?</dt>
+    <dd>Não. O PostgreSQL mantém versões das linhas; a reconciliação lê a versão da sua foto e as escritas seguem.</dd>
+
+    <dt>Por que a transação é <code>READ ONLY</code>?</dt>
+    <dd>Para o banco garantir que a reconciliação nunca escreve, não só o código.</dd>
+
+    <dt>Por que a aplicação não incrementa a métrica direto?</dt>
+    <dd>Para o núcleo não depender de Prometheus nem de <code>slog</code>; ele chama uma porta e a infraestrutura decide.</dd>
+  </dl>
+
+  <h3>Ordem de leitura do código</h3>
+  <ol>
+    <li><code>internal/application/reconcile_wallet.go</code></li>
+    <li><code>internal/infra/postgres/tx.go</code>: <code>WithinSnapshot</code></li>
+    <li><code>internal/infra/postgres/ledger_repository.go</code>: <code>Summarize</code></li>
+    <li><code>internal/infra/observability/metrics.go</code></li>
+    <li><code>internal/infra/httpapi/reconciliation_test.go</code></li>
   </ol>
 </section>
 
