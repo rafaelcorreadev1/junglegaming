@@ -171,7 +171,7 @@
   <p class="sub">O que foi construído em cada spec, por que foi feito assim e quais conceitos de Go aparecem, para quem vem de C#, Python e TypeScript.</p>
   <div class="meta">
     Repositório: github.com/rafaelcorreadev1/junglegaming<br>
-    Atualizado até a spec 14 · 13/10/2026
+    Atualizado até a spec 15 · 13/10/2026
   </div>
 </section>
 
@@ -207,7 +207,7 @@
       <tr><td>12</td><td>Reconciliação</td><td class="status done">Concluída</td></tr>
       <tr><td>13</td><td>Observabilidade</td><td class="status done">Concluída</td></tr>
       <tr><td>14</td><td>Ciclo de vida Fx e shutdown</td><td class="status done">Concluída</td></tr>
-      <tr><td>15</td><td>Testes de integração, concorrência e recuperação</td><td class="status todo">A fazer</td></tr>
+      <tr><td>15</td><td>Testes de integração, concorrência e recuperação</td><td class="status done">Concluída</td></tr>
       <tr><td>16</td><td>Documentação e entrega</td><td class="status todo">A fazer</td></tr>
     </tbody>
   </table>
@@ -3081,6 +3081,136 @@ func Attach(lc fx.Lifecycle, loop Loop)</code></pre>
     <li><code>internal/infra/sqs/publisher.go</code>: <code>checkQueuesOnStart</code>, <code>newClient</code></li>
     <li><code>internal/infra/auth/verifier.go</code>: <code>CheckKeys</code>, <code>Close</code></li>
     <li><code>internal/app/lifecycle_test.go</code></li>
+  </ol>
+</section>
+
+<!-- ============================ SPEC 15 ============================ -->
+<section class="chapter">
+  <div class="chapter-label">Spec 15</div>
+  <h1>Testes de integração, concorrência e recuperação</h1>
+  <p class="lead">Até aqui cada spec trouxe seus testes. Esta junta tudo contra a infraestrutura real: tokens de verdade do Keycloak, três réplicas disputando as mesmas carteiras e processos mortos nos piores momentos possíveis.</p>
+
+  <h2>1. O que o desafio exige</h2>
+  <ul>
+    <li>PostgreSQL, IdP e LocalStack em containers reais. Trocar a infraestrutura por mocks elimina o candidato.</li>
+    <li>Oito cenários de concorrência e recuperação (§13), alguns com pelo menos três instâncias independentes.</li>
+    <li><code>go test -race</code> onde se aplica.</li>
+  </ul>
+
+  <h2>2. Três camadas</h2>
+  <table>
+    <thead><tr><th>Camada</th><th>Onde</th><th>Contra o quê</th></tr></thead>
+    <tbody>
+      <tr><td>Unitário</td><td><code>internal/...</code></td><td>Nada externo</td></tr>
+      <tr><td>Componente</td><td><code>internal/...</code></td><td>Postgres e LocalStack reais; código chamado em processo</td></tr>
+      <tr><td>Caixa-preta</td><td><code>test/...</code></td><td>O serviço rodando, por HTTP e SQS, com tokens reais</td></tr>
+    </tbody>
+  </table>
+  <p>A camada caixa-preta é a que um avaliador reconhece: ela não sabe nada do código, só fala com o serviço como um provedor falaria.</p>
+
+  <h2>3. Build tags</h2>
+  <p>Uma <em>build tag</em> é uma condição de compilação na primeira linha do arquivo:</p>
+<pre><code>//go:build integration</code></pre>
+  <p>O arquivo só entra na compilação com <code>go test -tags=integration</code>. O pacote <code>testenv</code> tem duas versões de uma constante, uma em cada lado da tag:</p>
+<pre><code>// integration.go            // unit.go
+//go:build integration       //go:build !integration
+const Integration = true     const Integration = false</code></pre>
+  <table>
+    <thead><tr><th>Comando</th><th>Falta a variável <code>TEST_*</code></th></tr></thead>
+    <tbody>
+      <tr><td><code>go test ./...</code></td><td>Teste pulado, com a mensagem de como ativá-lo</td></tr>
+      <tr><td><code>go test -tags=integration ./...</code></td><td>Usa o endereço do Compose; container fora do ar faz o teste <strong>falhar</strong></td></tr>
+    </tbody>
+  </table>
+  <p>Assim o comando sem tag funciona num checkout limpo, e o comando com tag nunca "passa" pulando tudo em silêncio.</p>
+
+  <h2>4. Um cenário, uma ou três instâncias</h2>
+  <p>Os cenários ficam em <code>test/e2e</code> e recebem um cliente que alterna as requisições entre as instâncias que conhece. A mesma função roda em <code>test/integration</code> (uma URL) e em <code>test/multiinstance</code> (três réplicas do Compose, <code>--profile multi</code>).</p>
+  <p>Ter três réplicas não prova que as três trabalharam. O teste lê <code>/metrics</code> de cada uma antes e depois e falha se alguma não decidiu nada. Resultado real: 33/34/33 requisições HTTP e 60/60/60 mensagens do SQS.</p>
+  <div class="note"><strong>t.Fatal fora da goroutine do teste.</strong> O pacote <code>testing</code> não permite <code>FailNow</code> em outra goroutine. O helper <code>Parallel</code> entrega a cada goroutine um <code>testing.TB</code> embrulhado, cujo <code>Fatalf</code> vira <code>Errorf</code> + <code>runtime.Goexit()</code>. A goroutine termina, o teste falha, e o código dos helpers não precisa mudar.</div>
+
+  <h2>5. Duplicidade que só a aplicação pode pegar</h2>
+  <p>O SQS FIFO descarta mensagens com o mesmo <code>MessageDeduplicationId</code>. Se o teste mandasse a mesma mensagem duas vezes com o mesmo id, quem deduplicaria seria o SQS, e o teste não provaria nada sobre a inbox. Por isso cada envio usa um id de deduplicação novo, e o teste confere que o SQS devolveu dois <code>MessageId</code> diferentes, ou seja, duas entregas de verdade.</p>
+
+  <h2>6. Matando processos de propósito</h2>
+  <p><code>FAULT_INJECTION</code> faz o processo terminar com código 3 num ponto escolhido:</p>
+  <table>
+    <thead><tr><th>Valor</th><th>Morre entre</th></tr></thead>
+    <tbody>
+      <tr><td><code>exit-after-commit</code></td><td>o commit da mensagem e o delete na fila</td></tr>
+      <tr><td><code>exit-after-publish</code></td><td>o envio do evento e a marcação na outbox</td></tr>
+    </tbody>
+  </table>
+  <p>É um decorador Fx em volta do handler e do publisher; o caso de uso não sabe que ele existe. Um detalhe do Fx apareceu aqui: ele decora cada tipo uma vez só por escopo. O publisher já tinha o decorador de métricas, então os dois viraram uma função só.</p>
+  <p><code>test/recovery</code> compila <code>cmd/app</code> e sobe o binário com <code>os/exec</code>, com schema e filas próprios. Morte pela injeção ou por <code>Process.Kill</code> (o <code>kill -9</code>), depois um processo novo, e a verificação.</p>
+
+  <h2>7. Os cenários do §13</h2>
+  <table>
+    <thead><tr><th>#</th><th>Cenário</th><th>Resultado verificado</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td>Mesma aposta 50× em paralelo</td><td>1 aplicada, 49 replays, 1 débito</td></tr>
+      <tr><td>2</td><td>Duas de 80.00 sobre 100.00</td><td>1 processada, 1 <code>INSUFFICIENT_FUNDS</code>, saldo 20.00; reenvio igual</td></tr>
+      <tr><td>3</td><td>Carteiras distintas</td><td>100 apostas em 10 carteiras, todas aplicadas</td></tr>
+      <tr><td>4</td><td>1–3 com 3 instâncias</td><td>Mesmos resultados, com as três trabalhando</td></tr>
+      <tr><td>5</td><td>Morte após commit, antes do delete</td><td>Reentrega reconhecida pela inbox; 1 débito</td></tr>
+      <tr><td>6</td><td>Publishers concorrentes; morte entre envio e marcação</td><td>200 eventos sem perda e em ordem; reenvio com o mesmo <code>eventId</code></td></tr>
+      <tr><td>7</td><td>Reversão antes da referência</td><td><code>REFUND</code> resolvido depois; <code>ROLLBACK</code> rejeitado por expiração</td></tr>
+      <tr><td>8</td><td><code>kill -9</code> no meio da carga</td><td>Replay idêntico, pendência resolvida, 100 mensagens aplicadas uma vez</td></tr>
+      <tr><td>9</td><td>Mesma operação por HTTP e SQS</td><td>Um único débito</td></tr>
+    </tbody>
+  </table>
+  <p>Todo cenário financeiro termina igual: saldo esperado, débitos e créditos contados no extrato e reconciliação consistente (saldo armazenado = créditos − débitos).</p>
+
+  <h2>8. Autenticação com tokens de verdade</h2>
+  <ul>
+    <li>Ausente, malformado, assinatura forjada (cabeçalho e assinatura de um token, corpo de outro), <code>alg: none</code> e expirado: 401, nada gravado.</li>
+    <li>O expirado também é real: o cliente <code>provider-a-short-lived</code> emite tokens de 2s. O teste primeiro confirma que o token <em>funciona</em>; sem isso, um 401 depois da espera não provaria nada.</li>
+    <li>Provedor lendo transação de outro: 404 sem dados. Enviando em nome de outro: 403. Mesma chave de outro provedor: transação nova.</li>
+    <li>Provedor em rota interna: 403, e a carteira não é criada.</li>
+  </ul>
+
+  <h2>9. Testando os testes</h2>
+  <p>Teste que nunca falha não prova nada. Para cada suíte, introduzi um defeito, rodei e desfiz:</p>
+  <table>
+    <thead><tr><th>Defeito</th><th>Quem pegou</th></tr></thead>
+    <tbody>
+      <tr><td>Consumidor apaga a mensagem antes do commit</td><td>Cenário 5: fila vazia após a morte</td></tr>
+      <tr><td>Ordem invertida dentro do agregado</td><td>Cenário 6: ordem recebida ≠ gravada</td></tr>
+      <tr><td>Verificador ignora a expiração</td><td>Token vencido aceito, saldo 89.00 em vez de 99.00</td></tr>
+    </tbody>
+  </table>
+  <p>Uma primeira tentativa de mutação na ordem da outbox <em>não</em> foi pega. Investigando, a mudança afetava a ordem entre agregados, que não importa; a ordem dentro de cada agregado vem de outro ponto. A mutação estava errada, não o teste. Outra rodada falhou pelo motivo errado: uma chave de idempotência fixa no teste colidia entre execuções (409). Corrigido antes de repetir.</p>
+
+  <h2>10. Como rodar</h2>
+<pre><code>docker compose --profile multi up -d --build --wait
+go test ./...                              # unitários
+go test -tags=integration ./...            # tudo, sem nada pulado
+go test -tags=integration ./test/recovery  # só recuperação (~1 min)</code></pre>
+  <p>Resultado: tudo verde com e sem <code>-race</code> (no container), e as suítes caixa-preta passaram 3 vezes seguidas.</p>
+
+  <h2>11. Para fixar</h2>
+  <dl class="qa">
+    <dt>Por que não mandar a mesma mensagem duas vezes com o mesmo id de deduplicação?</dt>
+    <dd>O SQS descartaria a segunda, e o teste provaria o SQS, não a inbox.</dd>
+
+    <dt>Como provar que três instâncias participaram?</dt>
+    <dd>Comparando contadores do <code>/metrics</code> de cada uma antes e depois do cenário.</dd>
+
+    <dt>Por que subir o binário com <code>os/exec</code> em vez de chamar o código?</dt>
+    <dd>Porque só um processo de verdade pode morrer de verdade, sem rodar <code>defer</code> nem hooks de stop.</dd>
+
+    <dt>O que a build tag resolve?</dt>
+    <dd>Separa "rodar o que dá sem infraestrutura" de "rodar tudo e falhar se faltar algo".</dd>
+  </dl>
+
+  <h3>Ordem de leitura do código</h3>
+  <ol>
+    <li><code>internal/testenv/testenv.go</code></li>
+    <li><code>test/e2e/client.go</code> e <code>scenarios.go</code></li>
+    <li><code>test/integration/auth_test.go</code></li>
+    <li><code>test/multiinstance/multiinstance_test.go</code></li>
+    <li><code>internal/infra/faults/faults.go</code></li>
+    <li><code>test/recovery/process_test.go</code> e <code>recovery_test.go</code></li>
   </ol>
 </section>
 
