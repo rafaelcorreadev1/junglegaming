@@ -171,7 +171,7 @@
   <p class="sub">O que foi construído em cada spec, por que foi feito assim e quais conceitos de Go aparecem, para quem vem de C#, Python e TypeScript.</p>
   <div class="meta">
     Repositório: github.com/rafaelcorreadev1/junglegaming<br>
-    Atualizado até a spec 07 · 13/10/2026
+    Atualizado até a spec 08 · 13/10/2026
   </div>
 </section>
 
@@ -200,7 +200,7 @@
       <tr><td>05</td><td>Persistência e transação SQL</td><td class="status done">Concluída</td></tr>
       <tr><td>06</td><td>Carteira: abertura, leitura, ledger paginado</td><td class="status done">Concluída</td></tr>
       <tr><td>07</td><td>Operação: BET / WIN / LOSS e idempotência</td><td class="status done">Concluída</td></tr>
-      <tr><td>08</td><td>Reversões e referências pendentes</td><td class="status todo">A fazer</td></tr>
+      <tr><td>08</td><td>Reversões e referências pendentes</td><td class="status done">Concluída</td></tr>
       <tr><td>09</td><td>Autenticação e autorização</td><td class="status todo">A fazer</td></tr>
       <tr><td>10</td><td>Outbox e eventos</td><td class="status todo">A fazer</td></tr>
       <tr><td>11</td><td>Consumidor SQS, inbox e DLQ</td><td class="status todo">A fazer</td></tr>
@@ -1977,6 +1977,214 @@ close(results)</code></pre>
     <li><code>internal/infra/httpapi/wagering.go</code></li>
     <li><code>internal/infra/httpapi/wagering_test.go</code>: os dois testes com <code>InParallel</code> no nome</li>
     <li><code>internal/application/process_wager_transaction_test.go</code></li>
+  </ol>
+</section>
+
+<!-- ============================ SPEC 08 ============================ -->
+<section class="chapter">
+  <div class="chapter-label">Spec 08</div>
+  <h1>Reversões e referências pendentes</h1>
+  <p class="lead">Um <code>REFUND</code> pode chegar antes da aposta que ele devolve. Em vez de recusar, o serviço guarda a operação como pendente e um worker em segundo plano tenta de novo, com intervalos cada vez maiores, até a aposta chegar ou o prazo acabar.</p>
+
+  <h2>1. O que a spec pedia</h2>
+  <ul>
+    <li>Referência não encontrada: gravar <code>PENDING_REFERENCE</code> e responder <code>202</code> (já feito na spec 07).</li>
+    <li>Um worker que tenta de novo com <strong>backoff exponencial</strong>.</li>
+    <li>O estado da espera fica no banco e sobrevive a reinício.</li>
+    <li>Várias instâncias do worker não processam a mesma pendência duas vezes.</li>
+    <li>Esgotado o limite: <code>REJECTED</code> com <code>REFERENCE_NOT_FOUND</code>.</li>
+    <li>Dois <code>REFUND</code> da mesma aposta em paralelo: um processado, um rejeitado.</li>
+  </ul>
+
+  <h2>2. O que foi construído</h2>
+  <table>
+    <thead><tr><th>Arquivo</th><th>Conteúdo</th></tr></thead>
+    <tbody>
+      <tr><td><code>migrations/000005_add_reference_retry</code></td><td>Três colunas, dois <code>CHECK</code>, dois índices parciais</td></tr>
+      <tr><td><code>domain/wager_transaction.go</code></td><td><code>ScheduleReferenceAttempt</code> e os campos da espera</td></tr>
+      <tr><td><code>application/resolve_pending_references.go</code></td><td><code>ReferenceRetryPolicy</code> e o caso de uso <code>ResolvePendingReferences</code></td></tr>
+      <tr><td><code>infra/postgres/wager_transaction_repository.go</code></td><td><code>ClaimPendingReferences</code> e <code>WakePendingReferences</code></td></tr>
+      <tr><td><code>infra/worker/reference_resolver.go</code></td><td>A goroutine que chama o caso de uso a cada intervalo</td></tr>
+    </tbody>
+  </table>
+  <p>As regras de reversão (quem pode reverter o quê, valor igual, uma reversão por transação) continuam em <code>ApplyWager</code>, da spec 03. O worker chama a mesma função que o endpoint HTTP chama.</p>
+
+  <h2>3. Onde fica o estado da espera</h2>
+  <p>Se a contagem de tentativas ficasse em memória, um reinício zeraria tudo. Por isso ela fica em três colunas novas de <code>wager_transactions</code>:</p>
+  <table>
+    <thead><tr><th>Coluna</th><th>Uso</th></tr></thead>
+    <tbody>
+      <tr><td><code>reference_attempts</code></td><td>Quantas consultas não acharam a referência</td></tr>
+      <tr><td><code>next_reference_attempt_at</code></td><td>Quando consultar de novo</td></tr>
+      <tr><td><code>correlation_id</code></td><td>O correlation ID da requisição original</td></tr>
+    </tbody>
+  </table>
+<pre><code>CONSTRAINT wager_transactions_next_attempt_only_while_waiting CHECK (
+    (status = 'PENDING_REFERENCE') = (next_reference_attempt_at IS NOT NULL)
+)</code></pre>
+  <p>O <code>CHECK</code> compara dois booleanos: a data existe <strong>se e somente se</strong> a transação está esperando. Uma pendência sem data nunca seria pega de novo pelo worker; o banco recusa esse estado.</p>
+  <p>O <code>correlation_id</code> existe porque o worker conclui a operação minutos depois, fora de qualquer requisição. Sem a coluna, os eventos emitidos por ele não poderiam ser ligados ao pedido original.</p>
+
+  <h2>4. Backoff exponencial</h2>
+  <p>Consultar o banco a cada segundo por uma referência que pode demorar minutos é desperdício. No backoff exponencial a espera dobra a cada falha, até um teto.</p>
+<pre><code>func (p ReferenceRetryPolicy) delayAfter(attempts int) time.Duration {
+    delay := p.BaseDelay
+    for i := 1; i &lt; attempts; i++ {
+        if delay &gt;= p.MaxDelay/2 {
+            return p.MaxDelay
+        }
+        delay *= 2
+    }
+    return min(delay, p.MaxDelay)
+}</code></pre>
+  <table>
+    <thead><tr><th>Tentativa que falhou</th><th>1</th><th>2</th><th>3</th><th>4</th><th>5</th><th>6</th><th>7 a 9</th></tr></thead>
+    <tbody>
+      <tr><td>Espera até a próxima</td><td>1s</td><td>2s</td><td>4s</td><td>8s</td><td>16s</td><td>32s</td><td>60s</td></tr>
+    </tbody>
+  </table>
+  <ul>
+    <li>Com os padrões (base 1s, teto 1min, 10 tentativas) uma referência que nunca chega expira em cerca de 4 minutos.</li>
+    <li>O <code>if</code> dentro do laço testa <strong>antes</strong> de dobrar. <code>time.Duration</code> é um <code>int64</code> de nanossegundos; dobrar sem testar estouraria com um número alto de tentativas.</li>
+    <li><code>min</code> é função embutida do Go desde a versão 1.21.</li>
+    <li>Os quatro valores vêm de variáveis de ambiente (<code>REFERENCE_*</code>).</li>
+  </ul>
+
+  <h2>5. Uma fila dentro do PostgreSQL</h2>
+  <p>As pendências formam uma fila: "tudo que está <code>PENDING_REFERENCE</code> e com a data vencida". Com três instâncias do serviço, três workers leem essa fila ao mesmo tempo. O problema é entregar cada item a um só.</p>
+<pre><code>UPDATE wager_transactions
+   SET next_reference_attempt_at = $2          -- agora + 30s
+ WHERE id IN (
+    SELECT id FROM wager_transactions
+     WHERE status = 'PENDING_REFERENCE' AND next_reference_attempt_at &lt;= $1
+     ORDER BY next_reference_attempt_at
+     LIMIT $3
+       FOR UPDATE SKIP LOCKED
+ )
+RETURNING id::text, wallet_id::text</code></pre>
+  <ul>
+    <li><code>FOR UPDATE</code> trava as linhas escolhidas.</li>
+    <li><code>SKIP LOCKED</code> faz o comando <strong>pular</strong> as linhas que outra transação já travou, em vez de esperar por elas. Dois workers rodando ao mesmo tempo recebem conjuntos diferentes.</li>
+    <li><code>RETURNING</code> devolve as linhas alteradas, como um <code>SELECT</code> embutido no <code>UPDATE</code>.</li>
+  </ul>
+  <p>O lock some quando esse comando termina. O que protege a pendência depois disso é a data empurrada 30 segundos para a frente: para os outros workers ela deixou de estar vencida. Isso é uma <strong>reserva com prazo</strong> (em inglês, <em>lease</em>).</p>
+  <div class="note"><strong>Por que o prazo.</strong> Se a instância morrer logo depois de reservar, ninguém precisa "liberar" nada: em 30 segundos a data vence e outra instância pega a pendência. Um teste simula isso reservando sem resolver.</div>
+
+  <h2>6. Resolver uma pendência</h2>
+  <ol class="flow">
+    <li>Abrir transação SQL e travar a carteira (<code>GetForUpdate</code>).</li>
+    <li>Reler a transação. Se não está mais <code>PENDING_REFERENCE</code>, outra instância já resolveu: sair.</li>
+    <li>Procurar a referência e chamar <code>domain.ApplyWager</code>.</li>
+    <li>Ainda esperando e há tentativas: somar uma tentativa, gravar a próxima data, sair.</li>
+    <li>Ainda esperando e sem tentativas: marcar <code>REJECTED</code> com <code>REFERENCE_NOT_FOUND</code>.</li>
+    <li>Gravar transação, saldo, lançamento e eventos.</li>
+  </ol>
+  <p>Os passos de 3 em diante usam o mesmo código do endpoint HTTP. A parte comum foi extraída para <code>wagerOutcome.record</code>, chamada pelos dois casos de uso.</p>
+  <div class="warn"><strong>Ordem dos locks.</strong> O worker trava a carteira e só depois mexe na linha da transação, na mesma ordem do endpoint HTTP. Se ele segurasse a linha da transação e depois pedisse a carteira, poderia cruzar com uma requisição que tem a carteira e quer alterar aquela linha: cada um esperando o outro, um <em>deadlock</em>. Por isso a reserva (passo anterior) solta o lock da linha antes de a resolução começar.</div>
+
+  <h2>7. Despertar: não esperar o backoff à toa</h2>
+  <p>O backoff serve para a referência que não chegou. Quando ela chega, esperar o resto do intervalo seria atraso sem motivo. Ao gravar uma transação em estado final, a mesma transação SQL antecipa as pendências que apontam para ela:</p>
+<pre><code>UPDATE wager_transactions
+   SET next_reference_attempt_at = $3          -- agora
+ WHERE provider_id = $1 AND reference_external_transaction_id = $2
+   AND status = 'PENDING_REFERENCE' AND next_reference_attempt_at &gt; $3</code></pre>
+  <p>O worker pega a pendência no ciclo seguinte (até 1 segundo). Isso também resolve cadeias: um <code>ROLLBACK</code> esperando um <code>REFUND</code> que espera uma <code>BET</code> é concluído em dois ciclos.</p>
+
+  <h2>8. O worker: goroutine, ticker e cancelamento</h2>
+<pre><code>func (w *ReferenceResolver) Run(ctx context.Context) {
+    ticker := time.NewTicker(w.interval)
+    defer ticker.Stop()
+
+    for {
+        w.drain(ctx)
+        select {
+        case &lt;-ctx.Done():
+            return
+        case &lt;-ticker.C:
+        }
+    }
+}</code></pre>
+  <ul>
+    <li><code>time.NewTicker</code> cria um canal (<code>ticker.C</code>) que recebe um valor a cada intervalo. É o equivalente a um <code>setInterval</code> ou a um <code>PeriodicTimer</code> do C#.</li>
+    <li><code>select</code> espera o que acontecer primeiro: o contexto ser cancelado ou o próximo tique.</li>
+    <li><code>drain</code> repete enquanto o lote volta cheio, e para depois de um erro, para não girar em falso com o banco fora do ar.</li>
+  </ul>
+<pre><code>ctx, cancel := context.WithCancel(context.Background())
+done := make(chan struct{})
+
+lc.Append(fx.Hook{
+    OnStart: func(context.Context) error {
+        go func() {
+            defer close(done)
+            w.Run(ctx)
+        }()
+        return nil
+    },
+    OnStop: func(stopCtx context.Context) error {
+        cancel()
+        select {
+        case &lt;-done:
+            return nil
+        case &lt;-stopCtx.Done():
+            return stopCtx.Err()
+        }
+    },
+})</code></pre>
+  <ul>
+    <li>O contexto que o Fx passa ao <code>OnStart</code> expira quando a inicialização termina. A goroutine precisa de um contexto próprio.</li>
+    <li><code>done</code> é um canal fechado quando <code>Run</code> retorna. No <code>OnStop</code>, <code>cancel()</code> pede a parada e <code>&lt;-done</code> espera a pendência em andamento terminar.</li>
+    <li>Se demorar mais que o prazo de desligamento, <code>stopCtx.Done()</code> vence e o Fx segue. A transação SQL interrompida é desfeita e a reserva vence sozinha.</li>
+  </ul>
+
+  <h2>9. Como foi testado</h2>
+  <table>
+    <thead><tr><th>Cenário</th><th>Resultado verificado</th></tr></thead>
+    <tbody>
+      <tr><td><code>REFUND</code> antes da <code>BET</code></td><td><code>202</code>; a aposta chega; o resolvedor conclui; saldo volta a 100.00; eventos com o correlation ID original</td></tr>
+      <tr><td>Referência que nunca chega</td><td>Esperas de 1s, 2s, 4s, 4s; não é pega antes da hora; termina <code>REJECTED</code> / <code>REFERENCE_NOT_FOUND</code></td></tr>
+      <tr><td>Referência rejeitada</td><td>A reversão vira <code>REFERENCE_NOT_PROCESSED</code></td></tr>
+      <tr><td><code>ROLLBACK</code> de <code>WIN</code> sem saldo</td><td><code>REVERSAL_INSUFFICIENT_FUNDS</code></td></tr>
+      <tr><td>Dois <code>REFUND</code> (ou <code>REFUND</code> + <code>ROLLBACK</code>) em paralelo</td><td>Um <code>PROCESSED</code>, um <code>ALREADY_REVERSED</code>, um crédito</td></tr>
+      <tr><td>4 instâncias, 40 pendências, lotes de 5</td><td>Soma das reservas = 40; 40 créditos no razão</td></tr>
+      <tr><td>Instância morre depois de reservar</td><td>Invisível durante o prazo; retomada depois dele</td></tr>
+    </tbody>
+  </table>
+  <ul>
+    <li>Os testes usam um relógio com deslocamento (<code>testClock.advance</code>) para atravessar o backoff sem <code>sleep</code>.</li>
+    <li>Removi de propósito a reserva e depois o despertar: os testes falharam nos dois casos, e voltei o código.</li>
+    <li><code>go test -race</code> passa, com os testes de concorrência repetidos 5 vezes.</li>
+    <li>Com <code>curl</code> no Docker Compose: pendência criada, aplicação reiniciada, aposta enviada, <code>REFUND</code> concluído; outra pendência expirou com <code>REFERENCE_NOT_FOUND</code>.</li>
+  </ul>
+  <div class="warn"><strong>Limite.</strong> A disputa foi testada com vários resolvedores no mesmo processo, cada um com sua conexão. A prova com três processos separados fica para a spec 15.</div>
+
+  <h2>10. Para fixar</h2>
+  <dl class="qa">
+    <dt>O que <code>SKIP LOCKED</code> faz de diferente de um <code>FOR UPDATE</code> comum?</dt>
+    <dd>Pula as linhas já travadas em vez de esperar. Cada worker recebe linhas diferentes e nenhum fica parado.</dd>
+
+    <dt>O lock do <code>SKIP LOCKED</code> dura um comando. O que impede outro worker de pegar a pendência logo depois?</dt>
+    <dd>A data da próxima tentativa foi empurrada 30 segundos. Para os outros, ela não está vencida.</dd>
+
+    <dt>O que acontece se a instância morrer com uma pendência reservada?</dt>
+    <dd>Nada precisa ser liberado. A reserva vence e outra instância assume.</dd>
+
+    <dt>Por que o worker trava a carteira antes de mexer na transação?</dt>
+    <dd>Para usar a mesma ordem de locks do endpoint HTTP e não haver deadlock; e para que reversões da mesma carteira sejam decididas uma de cada vez.</dd>
+
+    <dt>Se a aposta chega, o <code>REFUND</code> espera o backoff terminar?</dt>
+    <dd>Não. A gravação da aposta antecipa a data das pendências que a referenciam.</dd>
+
+    <dt>Por que guardar o <code>correlation_id</code> na transação?</dt>
+    <dd>O worker roda fora de qualquer requisição; sem a coluna, os eventos dele não se ligariam ao pedido original.</dd>
+  </dl>
+
+  <h3>Ordem de leitura do código</h3>
+  <ol>
+    <li><code>migrations/000005_add_reference_retry.up.sql</code></li>
+    <li><code>internal/application/resolve_pending_references.go</code>: a política, depois <code>Execute</code> e <code>resolve</code></li>
+    <li><code>internal/infra/postgres/wager_transaction_repository.go</code>: <code>ClaimPendingReferences</code> e <code>WakePendingReferences</code></li>
+    <li><code>internal/infra/worker/reference_resolver.go</code></li>
+    <li><code>internal/infra/httpapi/references_test.go</code></li>
   </ol>
 </section>
 
