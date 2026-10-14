@@ -11,6 +11,7 @@ import (
 	"wagering-service/internal/application"
 	"wagering-service/internal/domain"
 	"wagering-service/internal/infra/auth"
+	"wagering-service/internal/infra/observability"
 )
 
 const idempotencyKeyHeader = "Idempotency-Key"
@@ -18,11 +19,17 @@ const idempotencyKeyHeader = "Idempotency-Key"
 type WageringHandler struct {
 	process *application.ProcessWagerTransaction
 	get     *application.GetWagerTransaction
+	metrics *observability.Metrics
 	logger  *slog.Logger
 }
 
-func NewWageringHandler(process *application.ProcessWagerTransaction, get *application.GetWagerTransaction, logger *slog.Logger) *WageringHandler {
-	return &WageringHandler{process: process, get: get, logger: logger}
+func NewWageringHandler(
+	process *application.ProcessWagerTransaction,
+	get *application.GetWagerTransaction,
+	metrics *observability.Metrics,
+	logger *slog.Logger,
+) *WageringHandler {
+	return &WageringHandler{process: process, get: get, metrics: metrics, logger: logger}
 }
 
 type wagerRequest struct {
@@ -106,6 +113,8 @@ func (h *WageringHandler) Process(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	observability.AddFields(r.Context(), "providerId", request.ProviderID, "walletId", request.WalletID)
+	start := time.Now()
 	result, err := h.process.Execute(r.Context(), application.ProcessWagerInput{
 		ProviderID:                     request.ProviderID,
 		ExternalTransactionID:          request.ExternalTransactionID,
@@ -125,6 +134,8 @@ func (h *WageringHandler) Process(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tx := result.Transaction
+	h.metrics.ObserveWager(observability.ChannelHTTP, tx, result.Replay, time.Since(start))
+	observability.AddFields(r.Context(), "transactionId", tx.ID())
 	writeJSON(w, statusFor(tx.Status()), wagerResultResponse{
 		TransactionID:    tx.ID(),
 		Status:           tx.Status(),
@@ -136,6 +147,7 @@ func (h *WageringHandler) Process(w http.ResponseWriter, r *http.Request) {
 
 func (h *WageringHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 	transactionID := chi.URLParam(r, "transactionId")
+	observability.AddFields(r.Context(), "transactionId", transactionID)
 	if err := uuid.Validate(transactionID); err != nil {
 		writeError(w, r, h.logger, invalidRequest("transactionId", "transactionId must be a UUID"))
 		return

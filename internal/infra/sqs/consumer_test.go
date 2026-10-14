@@ -14,9 +14,11 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
+	"github.com/prometheus/client_golang/prometheus"
 	"go.uber.org/fx/fxtest"
 
 	"wagering-service/internal/application"
+	"wagering-service/internal/infra/observability"
 	"wagering-service/internal/infra/system"
 )
 
@@ -130,7 +132,9 @@ func testOptions(q queuePair) ConsumerOptions {
 
 func newTestConsumer(t *testing.T, q queuePair, opts ConsumerOptions, handler WagerHandler) *Consumer {
 	t.Helper()
-	consumer, err := NewConsumer(q.client, handler, opts, system.UUIDGenerator{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	// No outbox: these tests never scrape, so the outbox age gauge is never evaluated.
+	consumer, err := NewConsumer(q.client, handler, opts, system.UUIDGenerator{}, observability.NewMetrics(observability.NewRegistry(), nil, logger), logger)
 	if err != nil {
 		t.Fatalf("NewConsumer: %v", err)
 	}
@@ -154,8 +158,9 @@ func body(messageID, externalID, provider string) string {
 	return strings.Replace(b, `"providerId": "provider-a"`, fmt.Sprintf(`"providerId": %q`, provider), 1)
 }
 
+// succeed answers like the real handler for a message it had already handled: no error and no transaction.
 func succeed(context.Context, application.WagerMessage) (application.HandleWagerMessageResult, error) {
-	return application.HandleWagerMessageResult{}, nil
+	return application.HandleWagerMessageResult{AlreadyHandled: true}, nil
 }
 
 func TestConsumerDeletesAHandledMessage(t *testing.T) {
@@ -218,8 +223,11 @@ func TestConsumerDeadLettersWhatARetryCannotFix(t *testing.T) {
 
 func TestConsumerRetriesATransientFailureAfterABackoff(t *testing.T) {
 	q := newQueuePair(t, 5)
+	opts := testOptions(q)
+	// Longer than the 1s long poll below, so seeing the message there would mean it skipped its backoff.
+	opts.RetryBaseDelay, opts.RetryMaxDelay = 3*time.Second, 3*time.Second
 	calls := 0
-	c := newTestConsumer(t, q, testOptions(q), handlerFunc(func(ctx context.Context, msg application.WagerMessage) (application.HandleWagerMessageResult, error) {
+	c := newTestConsumer(t, q, opts, handlerFunc(func(ctx context.Context, msg application.WagerMessage) (application.HandleWagerMessageResult, error) {
 		calls++
 		if calls == 1 {
 			return application.HandleWagerMessageResult{}, fmt.Errorf("%w: connection refused", application.ErrUnavailable)
@@ -385,7 +393,7 @@ func TestNewConsumerValidatesOptions(t *testing.T) {
 	valid := DefaultConsumerOptions()
 	valid.QueueURL, valid.DLQURL, valid.AllowedProviders = "q", "d", []string{"provider-a"}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	if _, err := NewConsumer(nil, nil, valid, system.UUIDGenerator{}, logger); err != nil {
+	if _, err := NewConsumer(nil, nil, valid, system.UUIDGenerator{}, nil, logger); err != nil {
 		t.Fatalf("valid options rejected: %v", err)
 	}
 
@@ -399,7 +407,7 @@ func TestNewConsumerValidatesOptions(t *testing.T) {
 	for name, breakIt := range broken {
 		opts := valid
 		breakIt(&opts)
-		if _, err := NewConsumer(nil, nil, opts, system.UUIDGenerator{}, logger); err == nil {
+		if _, err := NewConsumer(nil, nil, opts, system.UUIDGenerator{}, nil, logger); err == nil {
 			t.Errorf("%s: expected an error", name)
 		}
 	}
@@ -435,5 +443,87 @@ func TestRunKeepsTryingWhileTheQueueIsUnreachableAndStopsWhenCancelled(t *testin
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("Run did not return after cancellation")
+	}
+}
+
+func counterValue(t *testing.T, registry *prometheus.Registry, name string, labels map[string]string) float64 {
+	t.Helper()
+	families, err := registry.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	for _, family := range families {
+		if family.GetName() != name {
+			continue
+		}
+	metrics:
+		for _, metric := range family.GetMetric() {
+			for _, label := range metric.GetLabel() {
+				if labels[label.GetName()] != label.GetValue() {
+					continue metrics
+				}
+			}
+			return metric.GetCounter().GetValue()
+		}
+	}
+	return 0
+}
+
+type emptyOutbox struct{ application.OutboxRepository }
+
+func (emptyOutbox) OldestPending(context.Context) (time.Time, bool, error) {
+	return time.Time{}, false, nil
+}
+
+func TestConsumerMetrics(t *testing.T) {
+	q := newQueuePair(t, 5)
+	registry := observability.NewRegistry()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	calls := 0
+	handler := handlerFunc(func(ctx context.Context, msg application.WagerMessage) (application.HandleWagerMessageResult, error) {
+		calls++
+		if calls == 1 {
+			return application.HandleWagerMessageResult{}, application.ErrUnavailable
+		}
+		return succeed(ctx, msg)
+	})
+	opts := testOptions(q)
+	opts.RetryBaseDelay, opts.RetryMaxDelay = time.Second, time.Second
+	c, err := NewConsumer(q.client, handler, opts, system.UUIDGenerator{}, observability.NewMetrics(registry, emptyOutbox{}, logger), logger)
+	if err != nil {
+		t.Fatalf("NewConsumer: %v", err)
+	}
+	q.send(t, "wallet-1", "bad", `{"messageId":`)
+	q.send(t, "wallet-2", "good", body("msg-1", "tx-1", "provider-a"))
+
+	deadline := time.Now().Add(10 * time.Second)
+	for q.visibleInSource(t) > 0 && time.Now().Before(deadline) {
+		poll(t, c)
+	}
+
+	for _, check := range []struct {
+		name   string
+		labels map[string]string
+		want   float64
+	}{
+		{"wagering_dlq_messages_total", map[string]string{"reason": "invalid_message"}, 1},
+		{"wagering_retries_total", map[string]string{"component": "sqs_consumer"}, 1},
+		{"wagering_duplicates_total", map[string]string{"channel": "sqs", "kind": "inbox"}, 1},
+	} {
+		if got := counterValue(t, registry, check.name, check.labels); got != check.want {
+			t.Errorf("%s%v = %v, want %v", check.name, check.labels, got, check.want)
+		}
+	}
+}
+
+func TestProbeChecksEveryQueue(t *testing.T) {
+	q := newQueuePair(t, 5)
+	ok := &Probe{client: q.client, queueURLs: []string{q.source, q.dlq}}
+	if err := ok.Ping(context.Background()); err != nil {
+		t.Errorf("Ping with existing queues: %v", err)
+	}
+	missing := &Probe{client: q.client, queueURLs: []string{q.source, q.source + "-missing"}}
+	if err := missing.Ping(context.Background()); err == nil {
+		t.Error("Ping must fail when one of the queues does not exist")
 	}
 }

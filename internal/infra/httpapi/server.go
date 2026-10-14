@@ -17,11 +17,12 @@ import (
 	"wagering-service/internal/application"
 	"wagering-service/internal/config"
 	"wagering-service/internal/infra/auth"
+	"wagering-service/internal/infra/observability"
 )
 
 var Module = fx.Module("httpapi",
 	fx.Provide(
-		NewHealthHandler,
+		fx.Annotate(NewHealthHandler, fx.ParamTags(`group:"readiness"`)),
 		NewWalletHandler,
 		NewWageringHandler,
 		fx.Annotate(newVerifier, fx.As(new(TokenVerifier))),
@@ -39,10 +40,11 @@ func NewRouter(
 	verifier TokenVerifier,
 	ids application.IDGenerator,
 	registry *prometheus.Registry,
+	metrics *observability.Metrics,
 	logger *slog.Logger,
 ) http.Handler {
 	router := chi.NewRouter()
-	router.Use(correlationID(ids), recoverPanic(logger))
+	router.Use(correlationID(ids), observeRequests(metrics, logger), recoverPanic(logger))
 
 	router.Get("/health/live", health.Live)
 	router.Get("/health/ready", health.Ready)

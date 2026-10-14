@@ -42,20 +42,24 @@ type testEnv struct {
 	clock   *testClock
 	outbox  application.OutboxRepository
 	retry   application.ReferenceRetryPolicy
-	// registry and logs receive what the reconciliation reports.
+	// registry and logs receive the metrics and every log line written while handling requests.
 	registry *prometheus.Registry
+	metrics  *observability.Metrics
 	logs     *syncBuffer
 }
 
 func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
 	pool := testdb.NewPool(t)
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logs := &syncBuffer{}
+	logger := slog.New(observability.NewContextHandler(slog.NewJSONHandler(logs, nil)))
+	registry := observability.NewRegistry()
+	metrics := observability.NewMetrics(registry, postgres.NewOutboxRepository(pool), logger)
 
 	env := &testEnv{
 		t:       t,
 		pool:    pool,
-		tx:      postgres.NewTxManager(pool),
+		tx:      observability.InstrumentTxManager(postgres.NewTxManager(pool), metrics),
 		wallets: postgres.NewWalletRepository(pool),
 		wagers:  postgres.NewWagerTransactionRepository(pool),
 		ledger:  postgres.NewLedgerRepository(pool),
@@ -64,11 +68,12 @@ func newTestEnv(t *testing.T) *testEnv {
 		outbox:  postgres.NewOutboxRepository(pool),
 		retry:   application.DefaultReferenceRetryPolicy(),
 
-		registry: observability.NewRegistry(),
-		logs:     &syncBuffer{},
+		registry: registry,
+		metrics:  metrics,
+		logs:     logs,
 	}
 	outbox := env.outbox
-	reporter := observability.NewReconciliationReporter(env.registry, slog.New(slog.NewJSONHandler(env.logs, nil)))
+	reporter := observability.NewReconciliationReporter(metrics, logger)
 
 	walletHandler := NewWalletHandler(
 		application.NewOpenWallet(env.tx, env.wallets, env.wagers, env.ledger, outbox, env.clock, env.ids),
@@ -80,9 +85,11 @@ func newTestEnv(t *testing.T) *testEnv {
 	wageringHandler := NewWageringHandler(
 		application.NewProcessWagerTransaction(env.tx, env.wallets, env.wagers, env.ledger, outbox, env.clock, env.ids, env.retry),
 		application.NewGetWagerTransaction(env.wagers),
+		metrics,
 		logger,
 	)
-	env.router = NewRouter(NewHealthHandler(pool, logger), walletHandler, wageringHandler, fakeVerifier{}, env.ids, env.registry, logger)
+	health := NewHealthHandler([]ReadinessProbe{postgres.NewProbe(pool)}, logger)
+	env.router = NewRouter(health, walletHandler, wageringHandler, fakeVerifier{}, env.ids, registry, metrics, logger)
 	return env
 }
 

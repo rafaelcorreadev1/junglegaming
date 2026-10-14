@@ -8,6 +8,7 @@ import (
 
 	"wagering-service/internal/application"
 	"wagering-service/internal/config"
+	"wagering-service/internal/infra/observability"
 	"wagering-service/internal/infra/sqs"
 )
 
@@ -20,11 +21,18 @@ func startReferenceResolver(
 	resolver *application.ResolvePendingReferences,
 	policy application.ReferenceRetryPolicy,
 	cfg config.Config,
+	metrics *observability.Metrics,
 	logger *slog.Logger,
 ) {
 	job := func(ctx context.Context) (bool, error) {
-		claimed, err := resolver.Execute(ctx)
-		return claimed == policy.BatchSize, err
+		result, err := resolver.Execute(ctx)
+		for _, tx := range result.Decided {
+			metrics.TransactionDecided(observability.ChannelReferenceWorker, tx)
+		}
+		for range result.Rescheduled {
+			metrics.Retry("reference_resolver")
+		}
+		return result.Claimed == policy.BatchSize, err
 	}
 	NewPoller("reference-resolver", job, cfg.ReferencePollInterval, logger).Attach(lc)
 }

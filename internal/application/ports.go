@@ -23,6 +23,8 @@ var (
 
 	// ErrUnavailable marks failures worth retrying: the same call may succeed later without any change.
 	ErrUnavailable = errors.New("storage temporarily unavailable")
+	// ErrTransactionConflict is a deadlock or serialization failure; it always comes together with ErrUnavailable.
+	ErrTransactionConflict = errors.New("transaction aborted by a concurrent one")
 	// ErrInvariantViolation means the database refused a write the domain should never have produced.
 	ErrInvariantViolation = errors.New("storage invariant violated")
 )
@@ -99,6 +101,8 @@ type OutboxRecord struct {
 
 type OutboxRepository interface {
 	Append(ctx context.Context, message OutboxMessage) error
+	// OldestPending returns when the oldest unpublished event occurred, and false when none is pending.
+	OldestPending(ctx context.Context) (time.Time, bool, error)
 	// ClaimDue leases until leaseUntil the unpublished events of up to aggregates aggregates whose oldest
 	// unpublished event is due, at most perAggregate each, oldest first. An aggregate leased by another
 	// caller is skipped entirely, so its events are never sent out of order.

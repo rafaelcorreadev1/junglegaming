@@ -30,6 +30,19 @@ func (r *OutboxRepository) Append(ctx context.Context, message application.Outbo
 	return translate(err)
 }
 
+func (r *OutboxRepository) OldestPending(ctx context.Context) (time.Time, bool, error) {
+	var oldest *time.Time
+	err := querierFrom(ctx, r.pool).QueryRow(ctx,
+		"SELECT min(occurred_at) FROM outbox_events WHERE published_at IS NULL").Scan(&oldest)
+	if err != nil {
+		return time.Time{}, false, translate(err)
+	}
+	if oldest == nil {
+		return time.Time{}, false, nil
+	}
+	return *oldest, true, nil
+}
+
 func (r *OutboxRepository) ClaimDue(ctx context.Context, now, leaseUntil time.Time, aggregates, perAggregate int) ([]application.OutboxRecord, error) {
 	// Only the oldest unpublished event of an aggregate is locked; a competing publisher skips it with SKIP LOCKED
 	// and cannot pick a later event of the same aggregate either, because NOT EXISTS still sees the head unpublished.

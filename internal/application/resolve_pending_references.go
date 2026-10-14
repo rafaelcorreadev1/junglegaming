@@ -93,26 +93,44 @@ func NewResolvePendingReferences(
 	}
 }
 
-// Execute returns how many transactions it claimed; a full batch means more may be due.
-func (uc *ResolvePendingReferences) Execute(ctx context.Context) (int, error) {
+type ResolveResult struct {
+	// Claimed equal to the batch size means more may be due.
+	Claimed int
+	// Decided holds the transactions that reached a final status in this run.
+	Decided     []*domain.WagerTransaction
+	Rescheduled int
+}
+
+func (uc *ResolvePendingReferences) Execute(ctx context.Context) (ResolveResult, error) {
 	now := uc.clock.Now()
 	claimed, err := uc.wagers.ClaimPendingReferences(ctx, now, now.Add(uc.retry.Lease), uc.retry.BatchSize)
 	if err != nil {
-		return 0, err
+		return ResolveResult{}, err
 	}
 
+	result := ResolveResult{Claimed: len(claimed)}
 	var errs []error
 	for _, pending := range claimed {
 		// A failure here leaves the lease in place, so the transaction is retried when it expires.
-		if err := uc.resolve(ctx, pending); err != nil {
+		tx, err := uc.resolve(ctx, pending)
+		switch {
+		case err != nil:
 			errs = append(errs, fmt.Errorf("transaction %s: %w", pending.TransactionID, err))
+		case tx == nil:
+		case tx.Status().IsTerminal():
+			result.Decided = append(result.Decided, tx)
+		default:
+			result.Rescheduled++
 		}
 	}
-	return len(claimed), errors.Join(errs...)
+	return result, errors.Join(errs...)
 }
 
-func (uc *ResolvePendingReferences) resolve(ctx context.Context, pending PendingReference) error {
-	return uc.tx.WithinTx(ctx, func(ctx context.Context) error {
+// resolve returns the transaction it changed, or nil when another instance had already finished it.
+func (uc *ResolvePendingReferences) resolve(ctx context.Context, pending PendingReference) (*domain.WagerTransaction, error) {
+	var changed *domain.WagerTransaction
+	err := uc.tx.WithinTx(ctx, func(ctx context.Context) error {
+		changed = nil
 		// Same order as the request path (wallet, then transactions), so the two never deadlock.
 		wallet, err := uc.wallets.GetForUpdate(ctx, pending.WalletID)
 		if err != nil {
@@ -143,6 +161,7 @@ func (uc *ResolvePendingReferences) resolve(ctx context.Context, pending Pending
 				if err := tx.ScheduleReferenceAttempt(now.Add(uc.retry.delayAfter(attempts)), now); err != nil {
 					return err
 				}
+				changed = tx
 				return uc.wagers.Update(ctx, tx)
 			}
 			if err := tx.MarkRejected(expiredReferenceCode(reference), wallet.Balance(), now); err != nil {
@@ -153,8 +172,13 @@ func (uc *ResolvePendingReferences) resolve(ctx context.Context, pending Pending
 		if err := uc.wagers.Update(ctx, tx); err != nil {
 			return err
 		}
+		changed = tx
 		return uc.outcome.record(ctx, tx, wallet, entry)
 	})
+	if err != nil {
+		return nil, err
+	}
+	return changed, nil
 }
 
 func expiredReferenceCode(reference domain.Reference) domain.FailureCode {

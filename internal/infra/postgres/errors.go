@@ -62,7 +62,7 @@ func translatePgError(pgErr *pgconn.PgError) error {
 		}
 		return fmt.Errorf("%w: %w", application.ErrInvariantViolation, pgErr)
 	case pgErr.Code == sqlStateDeadlock || pgErr.Code == sqlStateSerialization:
-		return fmt.Errorf("%w: %w", application.ErrUnavailable, pgErr)
+		return fmt.Errorf("%w: %w: %w", application.ErrUnavailable, application.ErrTransactionConflict, pgErr)
 	case strings.HasPrefix(pgErr.Code, "23"):
 		return fmt.Errorf("%w: %w", application.ErrInvariantViolation, pgErr)
 	}

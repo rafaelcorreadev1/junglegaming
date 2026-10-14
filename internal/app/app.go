@@ -41,9 +41,19 @@ func Options(cfg config.Config) fx.Option {
 			application.NewHandleWagerMessage,
 		),
 		sqs.Module,
+		fx.Provide(
+			readinessProbe(postgres.NewProbe),
+			readinessProbe(sqs.NewProbe),
+		),
+		// At the root, so every module that asks for these gets the instrumented version.
+		fx.Decorate(observability.InstrumentTxManager, observability.InstrumentPublisher),
 		httpapi.Module,
 		worker.Module,
 	)
+}
+
+func readinessProbe(constructor any) any {
+	return fx.Annotate(constructor, fx.As(new(httpapi.ReadinessProbe)), fx.ResultTags(`group:"readiness"`))
 }
 
 func referenceRetryPolicy(cfg config.Config) (application.ReferenceRetryPolicy, error) {

@@ -13,6 +13,7 @@ import (
 
 	"wagering-service/internal/application"
 	"wagering-service/internal/domain"
+	"wagering-service/internal/infra/observability"
 )
 
 const maxRequestBodyBytes = 1 << 20
@@ -99,6 +100,7 @@ func (h *WalletHandler) Open(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	observability.AddFields(r.Context(), "walletId", wallet.ID())
 	w.Header().Set("Location", "/wallets/"+wallet.ID())
 	writeJSON(w, http.StatusCreated, toWalletResponse(wallet))
 }
@@ -189,6 +191,7 @@ func walletIDParam(r *http.Request) (string, error) {
 	if err := uuid.Validate(walletID); err != nil {
 		return "", invalidRequest("walletId", "walletId must be a UUID")
 	}
+	observability.AddFields(r.Context(), "walletId", walletID)
 	return walletID, nil
 }
 

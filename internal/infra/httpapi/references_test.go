@@ -20,11 +20,11 @@ func (e *testEnv) resolver(policy application.ReferenceRetryPolicy) *application
 
 func (e *testEnv) resolve(resolver *application.ResolvePendingReferences) int {
 	e.t.Helper()
-	claimed, err := resolver.Execute(context.Background())
+	result, err := resolver.Execute(context.Background())
 	if err != nil {
 		e.t.Fatalf("resolve pending references: %v", err)
 	}
-	return claimed
+	return result.Claimed
 }
 
 func (e *testEnv) transaction(id string) wagerTransactionResponse {
@@ -314,12 +314,13 @@ func TestCompetingInstancesResolveEachPendingReferenceOnce(t *testing.T) {
 		wg.Go(func() {
 			resolver, total := env.resolver(policy), 0
 			for {
-				claimed, err := resolver.Execute(context.Background())
+				result, err := resolver.Execute(context.Background())
 				if err != nil {
 					t.Errorf("resolve: %v", err)
 				}
-				total += claimed
-				if claimed == 0 {
+				// Counting decisions rather than claims: each pending transaction must be decided by exactly one instance.
+				total += len(result.Decided)
+				if result.Claimed == 0 {
 					claims <- total
 					return
 				}
@@ -334,7 +335,7 @@ func TestCompetingInstancesResolveEachPendingReferenceOnce(t *testing.T) {
 		total += claimed
 	}
 	if total != pendings {
-		t.Errorf("instances claimed %d transactions in total, want each of the %d exactly once", total, pendings)
+		t.Errorf("instances decided %d transactions in total, want each of the %d exactly once", total, pendings)
 	}
 	if n := env.count("SELECT count(*) FROM wager_transactions WHERE kind = 'REFUND' AND status = 'PROCESSED'"); n != pendings {
 		t.Errorf("%d refunds processed, want %d", n, pendings)

@@ -4,20 +4,25 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
-
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const readinessTimeout = 2 * time.Second
 
+// ReadinessProbe checks one dependency the service cannot work without.
+type ReadinessProbe interface {
+	Name() string
+	Ping(ctx context.Context) error
+}
+
 type HealthHandler struct {
-	pool   *pgxpool.Pool
+	probes []ReadinessProbe
 	logger *slog.Logger
 }
 
-func NewHealthHandler(pool *pgxpool.Pool, logger *slog.Logger) *HealthHandler {
-	return &HealthHandler{pool: pool, logger: logger}
+func NewHealthHandler(probes []ReadinessProbe, logger *slog.Logger) *HealthHandler {
+	return &HealthHandler{probes: probes, logger: logger}
 }
 
 func (h *HealthHandler) Live(w http.ResponseWriter, _ *http.Request) {
@@ -28,17 +33,29 @@ func (h *HealthHandler) Ready(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), readinessTimeout)
 	defer cancel()
 
-	if err := h.pool.Ping(ctx); err != nil {
-		h.logger.WarnContext(ctx, "readiness check failed", "dependency", "postgres", "error", err)
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
-			"status": "unavailable",
-			"checks": map[string]string{"postgres": "down"},
+	// In parallel, so one slow dependency does not eat the time budget of the others.
+	checks := make(map[string]string, len(h.probes))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for _, probe := range h.probes {
+		wg.Go(func() {
+			state := "up"
+			if err := probe.Ping(ctx); err != nil {
+				state = "down"
+				h.logger.WarnContext(ctx, "readiness check failed", "dependency", probe.Name(), "error", err)
+			}
+			mu.Lock()
+			checks[probe.Name()] = state
+			mu.Unlock()
 		})
-		return
 	}
+	wg.Wait()
 
-	writeJSON(w, http.StatusOK, map[string]any{
-		"status": "ok",
-		"checks": map[string]string{"postgres": "up"},
-	})
+	for _, state := range checks {
+		if state == "down" {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"status": "unavailable", "checks": checks})
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "checks": checks})
 }

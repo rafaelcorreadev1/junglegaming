@@ -15,6 +15,7 @@ import (
 
 	"wagering-service/internal/application"
 	"wagering-service/internal/domain"
+	"wagering-service/internal/infra/observability"
 )
 
 const (
@@ -61,10 +62,18 @@ type Consumer struct {
 	opts    ConsumerOptions
 	allowed map[string]bool
 	ids     application.IDGenerator
+	metrics *observability.Metrics
 	logger  *slog.Logger
 }
 
-func NewConsumer(client *sqs.Client, handler WagerHandler, opts ConsumerOptions, ids application.IDGenerator, logger *slog.Logger) (*Consumer, error) {
+func NewConsumer(
+	client *sqs.Client,
+	handler WagerHandler,
+	opts ConsumerOptions,
+	ids application.IDGenerator,
+	metrics *observability.Metrics,
+	logger *slog.Logger,
+) (*Consumer, error) {
 	switch {
 	case opts.QueueURL == "" || opts.DLQURL == "":
 		return nil, errors.New("wager queue and dead-letter queue URLs are required")
@@ -81,7 +90,8 @@ func NewConsumer(client *sqs.Client, handler WagerHandler, opts ConsumerOptions,
 	for _, provider := range opts.AllowedProviders {
 		allowed[provider] = true
 	}
-	return &Consumer{client: client, handler: handler, opts: opts, allowed: allowed, ids: ids, logger: logger.With("worker", "wager-consumer")}, nil
+	return &Consumer{client: client, handler: handler, opts: opts, allowed: allowed, ids: ids, metrics: metrics,
+		logger: logger.With("worker", "wager-consumer")}, nil
 }
 
 // Attach runs the consumer between the application's start and stop.
@@ -196,7 +206,8 @@ func (c *Consumer) handleBatch(ctx context.Context, messages []types.Message) {
 
 // handle reports whether the message left the queue, processed or dead-lettered, and otherwise when it comes back.
 func (c *Consumer) handle(ctx context.Context, m types.Message) (retryIn time.Duration, done bool) {
-	logger := c.logger.With("sqsMessageId", aws.ToString(m.MessageId))
+	ctx = observability.WithFields(ctx, "sqsMessageId", aws.ToString(m.MessageId))
+	start := time.Now()
 
 	correlationID := c.ids.NewID()
 	if attribute, ok := m.MessageAttributes[correlationIDAttribute]; ok && aws.ToString(attribute.StringValue) != "" {
@@ -204,33 +215,38 @@ func (c *Consumer) handle(ctx context.Context, m types.Message) (retryIn time.Du
 	}
 	msg, err := decodeWagerMessage([]byte(aws.ToString(m.Body)), correlationID)
 	if err != nil {
-		return c.deadLetter(ctx, logger, m, err)
+		return c.deadLetter(ctx, m, err)
 	}
-	logger = logger.With("messageId", msg.MessageID, "providerId", msg.Wager.ProviderID,
+	observability.AddFields(ctx, "messageId", msg.MessageID, "providerId", msg.Wager.ProviderID,
 		"walletId", msg.Wager.WalletID, "correlationId", msg.Wager.CorrelationID)
 	if !c.allowed[msg.Wager.ProviderID] {
-		return c.deadLetter(ctx, logger, m, invalidMessage("provider is not allowed on this queue"))
+		return c.deadLetter(ctx, m, invalidMessage("provider is not allowed on this queue"))
 	}
 
 	result, err := c.handler.Execute(ctx, msg)
 	switch {
 	case err == nil:
-		attrs := []any{"alreadyHandled", result.AlreadyHandled}
-		if result.Transaction != nil {
-			attrs = append(attrs, "transactionId", result.Transaction.ID(), "status", result.Transaction.Status(), "replay", result.Replay)
+		if result.AlreadyHandled {
+			c.metrics.ObserveProcessing(observability.ChannelSQS, time.Since(start))
+			c.metrics.InboxDuplicate()
+			c.logger.InfoContext(ctx, "wager message already handled")
+		} else {
+			c.metrics.ObserveWager(observability.ChannelSQS, result.Transaction, result.Replay, time.Since(start))
+			observability.AddFields(ctx, "transactionId", result.Transaction.ID())
+			c.logger.InfoContext(ctx, "wager message handled", "status", result.Transaction.Status(), "replay", result.Replay)
 		}
-		logger.InfoContext(ctx, "wager message handled", attrs...)
-		c.delete(ctx, logger, m)
+		c.delete(ctx, m)
 		return 0, true
 	case ctx.Err() != nil:
-		logger.WarnContext(ctx, "wager message interrupted by shutdown; releasing it", "error", err)
+		c.logger.WarnContext(ctx, "wager message interrupted by shutdown; releasing it", "error", err)
 		c.changeVisibility(ctx, m, 0)
 		return 0, false
 	case permanent(err):
-		return c.deadLetter(ctx, logger, m, err)
+		return c.deadLetter(ctx, m, err)
 	default:
 		delay := c.retryDelay(m)
-		logger.WarnContext(ctx, "wager message failed; it will be redelivered", "error", err, "retryIn", delay.String())
+		c.metrics.Retry("sqs_consumer")
+		c.logger.WarnContext(ctx, "wager message failed; it will be redelivered", "error", err, "retryIn", delay.String())
 		c.changeVisibility(ctx, m, delay)
 		return delay, false
 	}
@@ -270,7 +286,7 @@ func receiveCount(m types.Message) int {
 	return count
 }
 
-func (c *Consumer) deadLetter(ctx context.Context, logger *slog.Logger, m types.Message, cause error) (time.Duration, bool) {
+func (c *Consumer) deadLetter(ctx context.Context, m types.Message, cause error) (time.Duration, bool) {
 	callCtx, cancel := detached(ctx)
 	defer cancel()
 
@@ -293,23 +309,28 @@ func (c *Consumer) deadLetter(ctx context.Context, logger *slog.Logger, m types.
 		},
 	})
 	if err != nil {
-		logger.ErrorContext(ctx, "moving wager message to the dead-letter queue failed", "error", err, "reason", reason)
+		c.logger.ErrorContext(ctx, "moving wager message to the dead-letter queue failed", "error", err, "reason", reason)
 		delay := c.retryDelay(m)
 		c.changeVisibility(ctx, m, delay)
 		return delay, false
 	}
-	logger.ErrorContext(ctx, "wager message moved to the dead-letter queue", "reason", reason)
-	c.delete(ctx, logger, m)
+	metricReason := "permanent_error"
+	if errors.Is(cause, errInvalidMessage) {
+		metricReason = "invalid_message"
+	}
+	c.metrics.DeadLettered(metricReason)
+	c.logger.ErrorContext(ctx, "wager message moved to the dead-letter queue", "reason", reason)
+	c.delete(ctx, m)
 	return 0, true
 }
 
-func (c *Consumer) delete(ctx context.Context, logger *slog.Logger, m types.Message) {
+func (c *Consumer) delete(ctx context.Context, m types.Message) {
 	callCtx, cancel := detached(ctx)
 	defer cancel()
 	_, err := c.client.DeleteMessage(callCtx, &sqs.DeleteMessageInput{QueueUrl: aws.String(c.opts.QueueURL), ReceiptHandle: m.ReceiptHandle})
 	if err != nil {
 		// Safe to leave: the redelivery finds the message in the inbox.
-		logger.WarnContext(ctx, "deleting wager message failed", "error", err)
+		c.logger.WarnContext(ctx, "deleting wager message failed", "error", err)
 	}
 }
 
@@ -323,7 +344,7 @@ func (c *Consumer) changeVisibility(ctx context.Context, m types.Message, delay 
 	})
 	if err != nil {
 		// The message still comes back once its current visibility timeout ends.
-		c.logger.WarnContext(ctx, "changing wager message visibility failed", "error", err, "sqsMessageId", aws.ToString(m.MessageId))
+		c.logger.WarnContext(ctx, "changing wager message visibility failed", "error", err)
 	}
 }
 

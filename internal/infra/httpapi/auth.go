@@ -8,6 +8,7 @@ import (
 
 	"wagering-service/internal/application"
 	"wagering-service/internal/infra/auth"
+	"wagering-service/internal/infra/observability"
 )
 
 type TokenVerifier interface {
@@ -30,11 +31,12 @@ func authenticate(verifier TokenVerifier, logger *slog.Logger) func(http.Handler
 			}
 			principal, err := verifier.Verify(r.Context(), raw)
 			if err != nil {
-				logger.InfoContext(r.Context(), "access token rejected", "error", err, "correlationId", correlationIDFrom(r.Context()))
+				logger.InfoContext(r.Context(), "access token rejected", "error", err)
 				w.Header().Set("WWW-Authenticate", `Bearer error="invalid_token"`)
 				writeError(w, r, logger, errUnauthenticated)
 				return
 			}
+			observability.AddFields(r.Context(), "clientId", principal.ClientID)
 			next.ServeHTTP(w, r.WithContext(auth.WithPrincipal(r.Context(), principal)))
 		})
 	}

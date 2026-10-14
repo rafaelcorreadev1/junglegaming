@@ -76,9 +76,9 @@ func writeError(w http.ResponseWriter, r *http.Request, logger *slog.Logger, err
 	switch {
 	case api.status == http.StatusServiceUnavailable:
 		w.Header().Set("Retry-After", retryAfterSeconds)
-		logger.WarnContext(r.Context(), "request failed on a transient error", "error", err, "correlationId", correlationIDFrom(r.Context()))
+		logger.WarnContext(r.Context(), "request failed on a transient error", "error", err)
 	case api.status >= http.StatusInternalServerError:
-		logger.ErrorContext(r.Context(), "request failed", "error", err, "correlationId", correlationIDFrom(r.Context()))
+		logger.ErrorContext(r.Context(), "request failed", "error", err)
 	}
 	writeJSON(w, api.status, errorBody{Error: api.detail})
 }

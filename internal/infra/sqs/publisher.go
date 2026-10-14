@@ -14,6 +14,7 @@ import (
 
 	"wagering-service/internal/application"
 	"wagering-service/internal/config"
+	"wagering-service/internal/infra/observability"
 )
 
 type ClientConfig struct {
@@ -38,12 +39,19 @@ func newPublisher(client *sqs.Client, cfg config.Config) (*Publisher, error) {
 	return NewPublisher(client, cfg.OutboxQueueURL)
 }
 
-func newConsumer(client *sqs.Client, handler *application.HandleWagerMessage, cfg config.Config, ids application.IDGenerator, logger *slog.Logger) (*Consumer, error) {
+func newConsumer(
+	client *sqs.Client,
+	handler *application.HandleWagerMessage,
+	cfg config.Config,
+	ids application.IDGenerator,
+	metrics *observability.Metrics,
+	logger *slog.Logger,
+) (*Consumer, error) {
 	opts := DefaultConsumerOptions()
 	opts.QueueURL = cfg.WagerQueueURL
 	opts.DLQURL = cfg.WagerDLQURL
 	opts.AllowedProviders = cfg.WagerQueueProviders
-	return NewConsumer(client, handler, opts, ids, logger)
+	return NewConsumer(client, handler, opts, ids, metrics, logger)
 }
 
 func NewClient(ctx context.Context, cfg ClientConfig) (*sqs.Client, error) {
