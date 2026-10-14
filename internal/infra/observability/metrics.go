@@ -36,6 +36,7 @@ type Metrics struct {
 	transactions    *prometheus.CounterVec
 	duplicates      *prometheus.CounterVec
 	retries         *prometheus.CounterVec
+	published       prometheus.Counter
 	deadLetters     *prometheus.CounterVec
 	conflicts       *prometheus.CounterVec
 	processing      *prometheus.HistogramVec
@@ -58,6 +59,10 @@ func NewMetrics(registry *prometheus.Registry, outbox application.OutboxReposito
 			Name: "wagering_retries_total",
 			Help: "Work scheduled to run again after a failure, by component.",
 		}, []string{"component"}),
+		published: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "wagering_outbox_published_total",
+			Help: "Events this instance sent to the queue. A republished event counts again.",
+		}),
 		deadLetters: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "wagering_dlq_messages_total",
 			Help: "Messages this service moved to the dead-letter queue, by reason. Moves made by the redrive policy happen in SQS and are not counted here.",
@@ -90,7 +95,7 @@ func NewMetrics(registry *prometheus.Registry, outbox application.OutboxReposito
 		Help: "Age of the oldest unpublished outbox event; 0 when nothing is pending.",
 	}, func() float64 { return oldestPendingAge(outbox, logger) })
 
-	registry.MustRegister(m.transactions, m.duplicates, m.retries, m.deadLetters, m.conflicts,
+	registry.MustRegister(m.transactions, m.duplicates, m.retries, m.published, m.deadLetters, m.conflicts,
 		m.processing, m.httpRequests, m.httpDuration, m.reconciliations, outboxAge)
 	// Both series exist from the start, so a divergence shows up as an increase rather than as a new series.
 	m.reconciliations.WithLabelValues("consistent")
@@ -137,6 +142,10 @@ func (m *Metrics) InboxDuplicate() {
 
 func (m *Metrics) Retry(component string) {
 	m.retries.WithLabelValues(component).Inc()
+}
+
+func (m *Metrics) Published() {
+	m.published.Inc()
 }
 
 func (m *Metrics) DeadLettered(reason string) {

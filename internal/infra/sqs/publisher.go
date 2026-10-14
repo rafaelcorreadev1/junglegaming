@@ -61,7 +61,7 @@ func newPublisher(client *sqs.Client, cfg config.Config) (*Publisher, error) {
 
 func newConsumer(
 	client *sqs.Client,
-	handler *application.HandleWagerMessage,
+	handler WagerHandler,
 	cfg config.Config,
 	ids application.IDGenerator,
 	metrics *observability.Metrics,
@@ -71,6 +71,7 @@ func newConsumer(
 	opts.QueueURL = cfg.WagerQueueURL
 	opts.DLQURL = cfg.WagerDLQURL
 	opts.AllowedProviders = cfg.WagerQueueProviders
+	opts.VisibilityTimeout = cfg.WagerVisibilityTimeout
 	return NewConsumer(client, handler, opts, ids, metrics, logger)
 }
 

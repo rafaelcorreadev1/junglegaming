@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"wagering-service/internal/testenv"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -26,10 +27,7 @@ var testNow = time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
 // connect isolates each test in its own schema, so tests never see each other's tables.
 func connect(t *testing.T) *pgx.Conn {
 	t.Helper()
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL is not set")
-	}
+	url := testenv.DatabaseURL(t)
 
 	ctx := context.Background()
 	conn, err := pgx.Connect(ctx, url)

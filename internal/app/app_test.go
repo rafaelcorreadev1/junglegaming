@@ -19,6 +19,7 @@ func TestOptionsBuildAValidDependencyGraph(t *testing.T) {
 		ReferenceRetryBaseDelay: time.Second,
 		ReferenceRetryMaxDelay:  time.Minute,
 		ReferenceMaxAttempts:    10,
+		ReferenceLease:          30 * time.Second,
 
 		AuthIssuer:   "http://127.0.0.1:8081/realms/wagering",
 		AuthJWKSURL:  "http://127.0.0.1:8081/realms/wagering/protocol/openid-connect/certs",
@@ -27,11 +28,13 @@ func TestOptionsBuildAValidDependencyGraph(t *testing.T) {
 		AWSRegion:          "us-east-1",
 		SQSEndpoint:        "http://127.0.0.1:4566",
 		OutboxQueueURL:     "http://127.0.0.1:4566/000000000000/wager-events.fifo",
+		OutboxLease:        30 * time.Second,
 		OutboxPollInterval: time.Second,
 
-		WagerQueueURL:       "http://127.0.0.1:4566/000000000000/wager-transactions.fifo",
-		WagerDLQURL:         "http://127.0.0.1:4566/000000000000/wager-transactions-dlq.fifo",
-		WagerQueueProviders: []string{"provider-a"},
+		WagerQueueURL:          "http://127.0.0.1:4566/000000000000/wager-transactions.fifo",
+		WagerDLQURL:            "http://127.0.0.1:4566/000000000000/wager-transactions-dlq.fifo",
+		WagerQueueProviders:    []string{"provider-a"},
+		WagerVisibilityTimeout: 30 * time.Second,
 	}
 
 	if err := fx.ValidateApp(Options(cfg)); err != nil {

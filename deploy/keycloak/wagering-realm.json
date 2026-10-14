@@ -66,6 +66,34 @@
       ]
     },
     {
+      "clientId": "provider-a-short-lived",
+      "name": "Provider A, short-lived tokens (tests only)",
+      "enabled": true,
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "provider-a-short-lived-secret",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "protocol": "openid-connect",
+      "attributes": { "access.token.lifespan": "2" },
+      "protocolMappers": [
+        {
+          "name": "wagering-service audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": { "included.custom.audience": "wagering-service", "access.token.claim": "true", "id.token.claim": "false" }
+        },
+        {
+          "name": "provider_id",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-hardcoded-claim-mapper",
+          "config": { "claim.name": "provider_id", "claim.value": "provider-a", "jsonType.label": "String", "access.token.claim": "true", "id.token.claim": "false", "userinfo.token.claim": "false" }
+        }
+      ]
+    },
+    {
       "clientId": "wallet-service",
       "name": "Internal wallet service",
       "enabled": true,
@@ -90,6 +118,7 @@
   "users": [
     { "username": "service-account-provider-a", "enabled": true, "serviceAccountClientId": "provider-a", "realmRoles": ["provider"] },
     { "username": "service-account-provider-b", "enabled": true, "serviceAccountClientId": "provider-b", "realmRoles": ["provider"] },
+    { "username": "service-account-provider-a-short-lived", "enabled": true, "serviceAccountClientId": "provider-a-short-lived", "realmRoles": ["provider"] },
     { "username": "service-account-wallet-service", "enabled": true, "serviceAccountClientId": "wallet-service", "realmRoles": ["internal"] }
   ]
 }

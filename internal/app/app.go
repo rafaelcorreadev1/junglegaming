@@ -8,6 +8,7 @@ import (
 
 	"wagering-service/internal/application"
 	"wagering-service/internal/config"
+	"wagering-service/internal/infra/faults"
 	"wagering-service/internal/infra/httpapi"
 	"wagering-service/internal/infra/observability"
 	"wagering-service/internal/infra/postgres"
@@ -36,9 +37,9 @@ func Options(cfg config.Config) fx.Option {
 			application.NewProcessWagerTransaction,
 			application.NewGetWagerTransaction,
 			application.NewResolvePendingReferences,
-			application.DefaultOutboxPolicy,
+			outboxPolicy,
 			application.NewPublishOutbox,
-			application.NewHandleWagerMessage,
+			fx.Annotate(application.NewHandleWagerMessage, fx.As(new(sqs.WagerHandler))),
 		),
 		sqs.Module,
 		fx.Provide(
@@ -46,7 +47,7 @@ func Options(cfg config.Config) fx.Option {
 			readinessProbe(sqs.NewProbe),
 		),
 		// At the root, so every module that asks for these gets the instrumented version.
-		fx.Decorate(observability.InstrumentTxManager, observability.InstrumentPublisher),
+		fx.Decorate(observability.InstrumentTxManager, decoratePublisher, faults.Handler),
 		// Workers before HTTP: Fx stops in reverse order, so HTTP stops taking requests first and starts serving last.
 		worker.Module,
 		httpapi.Module,
@@ -62,5 +63,17 @@ func referenceRetryPolicy(cfg config.Config) (application.ReferenceRetryPolicy, 
 	policy.BaseDelay = cfg.ReferenceRetryBaseDelay
 	policy.MaxDelay = cfg.ReferenceRetryMaxDelay
 	policy.MaxAttempts = cfg.ReferenceMaxAttempts
+	policy.Lease = cfg.ReferenceLease
 	return policy, policy.Validate()
+}
+
+func outboxPolicy(cfg config.Config) (application.OutboxPolicy, error) {
+	policy := application.DefaultOutboxPolicy()
+	policy.Lease = cfg.OutboxLease
+	return policy, policy.Validate()
+}
+
+// decoratePublisher stacks both wrappers in one decorator, because Fx decorates a type only once per scope.
+func decoratePublisher(next application.EventPublisher, metrics *observability.Metrics, cfg config.Config, logger *slog.Logger) application.EventPublisher {
+	return faults.Publisher(observability.InstrumentPublisher(next, metrics), cfg, logger)
 }

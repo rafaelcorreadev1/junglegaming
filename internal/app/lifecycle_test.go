@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -23,6 +22,7 @@ import (
 	"wagering-service/internal/config"
 	"wagering-service/internal/infra/sqs"
 	"wagering-service/internal/testdb"
+	"wagering-service/internal/testenv"
 )
 
 type lockedBuffer struct {
@@ -45,10 +45,7 @@ func (b *lockedBuffer) String() string {
 // realConfig points the whole application at the test PostgreSQL schema, fresh LocalStack queues and a fake key server.
 func realConfig(t *testing.T) config.Config {
 	t.Helper()
-	endpoint := os.Getenv("TEST_SQS_ENDPOINT")
-	if endpoint == "" {
-		t.Skip("TEST_SQS_ENDPOINT not set")
-	}
+	endpoint := testenv.SQSEndpoint(t)
 	pool := testdb.NewPool(t)
 	schema := pool.Config().ConnConfig.RuntimeParams["search_path"]
 
@@ -86,7 +83,7 @@ func realConfig(t *testing.T) config.Config {
 
 	return config.Config{
 		HTTPAddr:        addr,
-		DatabaseURL:     os.Getenv("TEST_DATABASE_URL") + "&search_path=" + schema,
+		DatabaseURL:     testenv.DatabaseURL(t) + "&search_path=" + schema,
 		LogLevel:        slog.LevelInfo,
 		ShutdownTimeout: 10 * time.Second,
 
@@ -94,6 +91,7 @@ func realConfig(t *testing.T) config.Config {
 		ReferenceRetryBaseDelay: time.Second,
 		ReferenceRetryMaxDelay:  time.Minute,
 		ReferenceMaxAttempts:    10,
+		ReferenceLease:          30 * time.Second,
 
 		AuthIssuer:   "http://issuer.test",
 		AuthJWKSURL:  keys.URL,
@@ -102,11 +100,13 @@ func realConfig(t *testing.T) config.Config {
 		AWSRegion:          "us-east-1",
 		SQSEndpoint:        endpoint,
 		OutboxQueueURL:     queue("events"),
+		OutboxLease:        30 * time.Second,
 		OutboxPollInterval: 100 * time.Millisecond,
 
-		WagerQueueURL:       queue("wagers"),
-		WagerDLQURL:         queue("wagers-dlq"),
-		WagerQueueProviders: []string{"provider-a"},
+		WagerQueueURL:          queue("wagers"),
+		WagerDLQURL:            queue("wagers-dlq"),
+		WagerQueueProviders:    []string{"provider-a"},
+		WagerVisibilityTimeout: 30 * time.Second,
 	}
 }
 

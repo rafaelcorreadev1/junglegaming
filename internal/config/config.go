@@ -20,6 +20,7 @@ type Config struct {
 	ReferenceRetryBaseDelay time.Duration
 	ReferenceRetryMaxDelay  time.Duration
 	ReferenceMaxAttempts    int
+	ReferenceLease          time.Duration
 
 	AuthIssuer   string
 	AuthJWKSURL  string
@@ -29,11 +30,21 @@ type Config struct {
 	SQSEndpoint        string
 	OutboxQueueURL     string
 	OutboxPollInterval time.Duration
+	OutboxLease        time.Duration
 
-	WagerQueueURL       string
-	WagerDLQURL         string
-	WagerQueueProviders []string
+	WagerQueueURL          string
+	WagerDLQURL            string
+	WagerQueueProviders    []string
+	WagerVisibilityTimeout time.Duration
+
+	// FaultInjection makes the process exit at a chosen point; only the recovery tests set it.
+	FaultInjection string
 }
+
+const (
+	FaultExitAfterCommit  = "exit-after-commit"
+	FaultExitAfterPublish = "exit-after-publish"
+)
 
 func Load() (Config, error) {
 	return FromEnv(os.Getenv)
@@ -56,6 +67,8 @@ func FromEnv(getenv func(string) string) (Config, error) {
 		WagerQueueURL:       getenv("WAGER_QUEUE_URL"),
 		WagerDLQURL:         getenv("WAGER_DLQ_URL"),
 		WagerQueueProviders: list(getenv("WAGER_QUEUE_PROVIDERS")),
+
+		FaultInjection: getenv("FAULT_INJECTION"),
 	}
 
 	var errs []error
@@ -90,7 +103,10 @@ func FromEnv(getenv func(string) string) (Config, error) {
 		{"REFERENCE_POLL_INTERVAL", &cfg.ReferencePollInterval, time.Second},
 		{"REFERENCE_RETRY_BASE_DELAY", &cfg.ReferenceRetryBaseDelay, time.Second},
 		{"REFERENCE_RETRY_MAX_DELAY", &cfg.ReferenceRetryMaxDelay, time.Minute},
+		{"REFERENCE_LEASE", &cfg.ReferenceLease, 30 * time.Second},
 		{"OUTBOX_POLL_INTERVAL", &cfg.OutboxPollInterval, 500 * time.Millisecond},
+		{"OUTBOX_LEASE", &cfg.OutboxLease, 30 * time.Second},
+		{"WAGER_VISIBILITY_TIMEOUT", &cfg.WagerVisibilityTimeout, 30 * time.Second},
 	}
 	for _, d := range durations {
 		value, err := positiveDuration(d.name, getenv(d.name), d.fallback)
@@ -115,6 +131,12 @@ func FromEnv(getenv func(string) string) (Config, error) {
 
 	if cfg.ReferenceRetryMaxDelay < cfg.ReferenceRetryBaseDelay {
 		errs = append(errs, errors.New("REFERENCE_RETRY_MAX_DELAY must not be shorter than REFERENCE_RETRY_BASE_DELAY"))
+	}
+
+	switch cfg.FaultInjection {
+	case "", FaultExitAfterCommit, FaultExitAfterPublish:
+	default:
+		errs = append(errs, fmt.Errorf("FAULT_INJECTION must be %s or %s", FaultExitAfterCommit, FaultExitAfterPublish))
 	}
 
 	if err := errors.Join(errs...); err != nil {

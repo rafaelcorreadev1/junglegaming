@@ -99,13 +99,16 @@ type failingPublisher struct{ err error }
 
 func (p failingPublisher) Publish(context.Context, application.OutboxMessage) error { return p.err }
 
-func TestFailedPublicationsCountAsOutboxRetries(t *testing.T) {
+func TestPublicationsCountAsSentOrRetried(t *testing.T) {
 	metrics := NewMetrics(NewRegistry(), nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	_ = InstrumentPublisher(failingPublisher{}, metrics).Publish(context.Background(), application.OutboxMessage{})
 	_ = InstrumentPublisher(failingPublisher{errors.New("sqs down")}, metrics).Publish(context.Background(), application.OutboxMessage{})
 
 	if got := testutil.ToFloat64(metrics.retries.WithLabelValues("outbox_publisher")); got != 1 {
 		t.Errorf("outbox retries = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(metrics.published); got != 1 {
+		t.Errorf("published = %v, want 1", got)
 	}
 }
 

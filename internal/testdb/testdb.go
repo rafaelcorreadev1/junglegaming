@@ -14,15 +14,13 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"wagering-service/internal/testenv"
 )
 
-// NewPool skips the test when TEST_DATABASE_URL is not set.
 func NewPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL is not set")
-	}
+	url := testenv.DatabaseURL(t)
 	ctx := context.Background()
 	schema := fmt.Sprintf("test_%d", time.Now().UnixNano())
 
@@ -37,7 +35,7 @@ func NewPool(t *testing.T) *pgxpool.Pool {
 
 	config, err := pgxpool.ParseConfig(url)
 	if err != nil {
-		t.Fatalf("parse TEST_DATABASE_URL: %v", err)
+		t.Fatalf("parse database URL: %v", err)
 	}
 	config.ConnConfig.RuntimeParams["search_path"] = schema
 

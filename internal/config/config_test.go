@@ -45,6 +45,12 @@ func TestFromEnvAppliesDefaults(t *testing.T) {
 		t.Errorf("reference retry defaults = %v/%v/%v/%d, want 1s/1s/1m/10",
 			cfg.ReferencePollInterval, cfg.ReferenceRetryBaseDelay, cfg.ReferenceRetryMaxDelay, cfg.ReferenceMaxAttempts)
 	}
+	if cfg.ReferenceLease != 30*time.Second || cfg.OutboxLease != 30*time.Second || cfg.WagerVisibilityTimeout != 30*time.Second {
+		t.Errorf("leases = %v/%v/%v, want 30s each", cfg.ReferenceLease, cfg.OutboxLease, cfg.WagerVisibilityTimeout)
+	}
+	if cfg.FaultInjection != "" {
+		t.Errorf("FaultInjection = %q, want none", cfg.FaultInjection)
+	}
 }
 
 func TestFromEnvReadsOverrides(t *testing.T) {
@@ -68,6 +74,10 @@ func TestFromEnvReadsOverrides(t *testing.T) {
 		"REFERENCE_RETRY_BASE_DELAY": "2s",
 		"REFERENCE_RETRY_MAX_DELAY":  "30s",
 		"REFERENCE_MAX_ATTEMPTS":     "4",
+		"REFERENCE_LEASE":            "5s",
+		"OUTBOX_LEASE":               "6s",
+		"WAGER_VISIBILITY_TIMEOUT":   "7s",
+		"FAULT_INJECTION":            "exit-after-commit",
 	}))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -97,6 +107,12 @@ func TestFromEnvReadsOverrides(t *testing.T) {
 		cfg.ReferenceRetryMaxDelay != 30*time.Second || cfg.ReferenceMaxAttempts != 4 {
 		t.Errorf("reference retry = %v/%v/%v/%d, want 250ms/2s/30s/4",
 			cfg.ReferencePollInterval, cfg.ReferenceRetryBaseDelay, cfg.ReferenceRetryMaxDelay, cfg.ReferenceMaxAttempts)
+	}
+	if cfg.ReferenceLease != 5*time.Second || cfg.OutboxLease != 6*time.Second || cfg.WagerVisibilityTimeout != 7*time.Second {
+		t.Errorf("leases = %v/%v/%v, want 5s/6s/7s", cfg.ReferenceLease, cfg.OutboxLease, cfg.WagerVisibilityTimeout)
+	}
+	if cfg.FaultInjection != FaultExitAfterCommit {
+		t.Errorf("FaultInjection = %q", cfg.FaultInjection)
 	}
 }
 
@@ -155,6 +171,11 @@ func TestFromEnvRejectsInvalidValues(t *testing.T) {
 			name:    "non-positive shutdown timeout",
 			env:     map[string]string{"DATABASE_URL": "x", "AUTH_ISSUER": "x", "AUTH_JWKS_URL": "x", "OUTBOX_QUEUE_URL": "x", "WAGER_QUEUE_URL": "x", "WAGER_DLQ_URL": "x", "WAGER_QUEUE_PROVIDERS": "x", "SHUTDOWN_TIMEOUT": "0s"},
 			wantErr: "SHUTDOWN_TIMEOUT must be positive",
+		},
+		{
+			name:    "unknown fault",
+			env:     map[string]string{"DATABASE_URL": "x", "AUTH_ISSUER": "x", "AUTH_JWKS_URL": "x", "OUTBOX_QUEUE_URL": "x", "WAGER_QUEUE_URL": "x", "WAGER_DLQ_URL": "x", "WAGER_QUEUE_PROVIDERS": "x", "FAULT_INJECTION": "explode"},
+			wantErr: "FAULT_INJECTION must be",
 		},
 	}
 

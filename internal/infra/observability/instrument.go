@@ -45,7 +45,7 @@ func conflictReason(err error) (string, bool) {
 	return "", false
 }
 
-// InstrumentPublisher counts failed publications, each of which the outbox schedules again.
+// InstrumentPublisher counts sent events and failed publications, each of which the outbox schedules again.
 func InstrumentPublisher(next application.EventPublisher, metrics *Metrics) application.EventPublisher {
 	return &instrumentedPublisher{next: next, metrics: metrics}
 }
@@ -59,6 +59,8 @@ func (p *instrumentedPublisher) Publish(ctx context.Context, message application
 	err := p.next.Publish(ctx, message)
 	if err != nil {
 		p.metrics.Retry("outbox_publisher")
+		return err
 	}
-	return err
+	p.metrics.Published()
+	return nil
 }

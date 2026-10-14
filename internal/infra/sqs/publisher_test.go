@@ -3,7 +3,6 @@ package sqs
 import (
 	"context"
 	"fmt"
-	"os"
 	"testing"
 	"time"
 
@@ -12,15 +11,13 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
 
 	"wagering-service/internal/application"
+	"wagering-service/internal/testenv"
 )
 
-// newTestQueue creates a FIFO queue of its own in LocalStack; skipped when TEST_SQS_ENDPOINT is unset.
+// newTestQueue creates a FIFO queue of its own in LocalStack.
 func newTestQueue(t *testing.T) (*sqs.Client, string) {
 	t.Helper()
-	endpoint := os.Getenv("TEST_SQS_ENDPOINT")
-	if endpoint == "" {
-		t.Skip("TEST_SQS_ENDPOINT not set")
-	}
+	endpoint := testenv.SQSEndpoint(t)
 	t.Setenv("AWS_ACCESS_KEY_ID", "test")
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
 
