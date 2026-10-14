@@ -171,7 +171,7 @@
   <p class="sub">O que foi construído em cada spec, por que foi feito assim e quais conceitos de Go aparecem, para quem vem de C#, Python e TypeScript.</p>
   <div class="meta">
     Repositório: github.com/rafaelcorreadev1/junglegaming<br>
-    Atualizado até a spec 08 · 13/10/2026
+    Atualizado até a spec 09 · 13/10/2026
   </div>
 </section>
 
@@ -201,7 +201,7 @@
       <tr><td>06</td><td>Carteira: abertura, leitura, ledger paginado</td><td class="status done">Concluída</td></tr>
       <tr><td>07</td><td>Operação: BET / WIN / LOSS e idempotência</td><td class="status done">Concluída</td></tr>
       <tr><td>08</td><td>Reversões e referências pendentes</td><td class="status done">Concluída</td></tr>
-      <tr><td>09</td><td>Autenticação e autorização</td><td class="status todo">A fazer</td></tr>
+      <tr><td>09</td><td>Autenticação e autorização</td><td class="status done">Concluída</td></tr>
       <tr><td>10</td><td>Outbox e eventos</td><td class="status todo">A fazer</td></tr>
       <tr><td>11</td><td>Consumidor SQS, inbox e DLQ</td><td class="status todo">A fazer</td></tr>
       <tr><td>12</td><td>Reconciliação</td><td class="status todo">A fazer</td></tr>
@@ -2185,6 +2185,190 @@ lc.Append(fx.Hook{
     <li><code>internal/infra/postgres/wager_transaction_repository.go</code>: <code>ClaimPendingReferences</code> e <code>WakePendingReferences</code></li>
     <li><code>internal/infra/worker/reference_resolver.go</code></li>
     <li><code>internal/infra/httpapi/references_test.go</code></li>
+  </ol>
+</section>
+
+<!-- ============================ SPEC 09 ============================ -->
+<section class="chapter">
+  <div class="chapter-label">Spec 09</div>
+  <h1>Autenticação e autorização</h1>
+  <p class="lead">Até aqui qualquer um podia chamar qualquer endpoint dizendo ser qualquer provedor. Agora todo endpoint de negócio exige um token emitido pelo Keycloak, e é o token, não o corpo da requisição, que diz quem está chamando.</p>
+
+  <h2>1. O que a spec pedia</h2>
+  <ul>
+    <li>Provedor de identidade externo (OAuth 2.0 / OIDC), fluxo <code>client_credentials</code>. Sem senha e sem token próprio.</li>
+    <li>O <code>providerId</code> do corpo precisa bater com o do token.</li>
+    <li>Provedor só vê as próprias transações; carteira só para o serviço interno; health checks públicos.</li>
+    <li>Sem token ou token inválido: <code>401</code>. Token válido sem permissão: <code>403</code>. Transação de outro provedor: <code>404</code>.</li>
+  </ul>
+  <div class="warn"><strong>Eliminatório.</strong> Endpoint de negócio sem autenticação efetiva, ou acesso a transação de outro provedor, desclassifica a entrega.</div>
+
+  <h2>2. Autenticação × autorização</h2>
+  <table>
+    <thead><tr><th></th><th>Pergunta</th><th>Falha</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Autenticação</strong></td><td>Quem é você? O token é legítimo?</td><td><code>401 Unauthorized</code></td></tr>
+      <tr><td><strong>Autorização</strong></td><td>Você pode fazer isto?</td><td><code>403 Forbidden</code></td></tr>
+    </tbody>
+  </table>
+  <p>O nome do <code>401</code> engana: ele significa "não autenticado". O <code>403</code> é o "não autorizado" de verdade.</p>
+
+  <h2>3. O fluxo <code>client_credentials</code></h2>
+  <p>É o fluxo OAuth para serviço falando com serviço, sem usuário humano. Cada provedor é um <strong>client</strong> no Keycloak, com um identificador e um segredo.</p>
+  <ol class="flow">
+    <li>O provedor manda <code>client_id</code> e <code>client_secret</code> ao Keycloak.</li>
+    <li>O Keycloak devolve um <strong>access token</strong> (um JWT) válido por 5 minutos.</li>
+    <li>O provedor chama o nosso serviço com <code>Authorization: Bearer &lt;token&gt;</code>.</li>
+    <li>O serviço confere o token sozinho, sem chamar o Keycloak a cada requisição.</li>
+  </ol>
+<pre><code>curl -s -X POST http://localhost:8081/realms/wagering/protocol/openid-connect/token \
+  -d grant_type=client_credentials -d client_id=provider-a -d client_secret=provider-a-secret</code></pre>
+
+  <h2>4. JWT e JWKS</h2>
+  <p>Um JWT tem três partes em base64url separadas por ponto: <code>cabeçalho.conteúdo.assinatura</code>. O conteúdo de um token do <code>provider-a</code>:</p>
+<pre><code>{
+  "iss": "http://localhost:8081/realms/wagering",
+  "aud": "wagering-service",
+  "azp": "provider-a",
+  "exp": 1791979240,
+  "realm_access": { "roles": ["provider"] },
+  "provider_id": "provider-a"
+}</code></pre>
+  <ul>
+    <li><code>iss</code> (issuer): quem emitiu. <code>aud</code> (audience): para quem o token foi feito. <code>exp</code>: quando expira.</li>
+    <li><code>azp</code>: o client que pediu o token. <code>realm_access.roles</code>: os papéis. <code>provider_id</code>: claim que criamos no Keycloak.</li>
+    <li>Qualquer um lê o conteúdo; ele não é secreto. O que impede a falsificação é a <strong>assinatura</strong>.</li>
+  </ul>
+  <p>O Keycloak assina com uma chave privada RSA que só ele tem. A chave pública correspondente fica publicada em um endereço chamado <strong>JWKS</strong> (JSON Web Key Set). O nosso serviço baixa essas chaves e confere a assinatura localmente. O cabeçalho do token traz um <code>kid</code> (key id) que diz qual chave usar.</p>
+  <div class="note"><strong>Por que conferir <code>aud</code>.</strong> O mesmo Keycloak pode emitir tokens para vários sistemas. Sem checar a audiência, um token feito para outro serviço do mesmo realm seria aceito aqui.</div>
+
+  <h2>5. O realm no Keycloak</h2>
+  <p>O arquivo <code>deploy/keycloak/wagering-realm.json</code> é importado no <code>docker compose up</code>. Ele cria:</p>
+  <table>
+    <thead><tr><th>Client</th><th>Papel</th><th>Mappers</th></tr></thead>
+    <tbody>
+      <tr><td><code>provider-a</code>, <code>provider-b</code></td><td><code>provider</code></td><td>audiência <code>wagering-service</code>; claim fixo <code>provider_id</code></td></tr>
+      <tr><td><code>wallet-service</code></td><td><code>internal</code></td><td>audiência <code>wagering-service</code></td></tr>
+    </tbody>
+  </table>
+  <ul>
+    <li>Um <strong>mapper</strong> é uma regra do Keycloak que acrescenta algo ao token. O de audiência coloca <code>wagering-service</code> em <code>aud</code>; o <em>hardcoded claim</em> coloca <code>provider_id</code>.</li>
+    <li>Em <code>client_credentials</code> o Keycloak cria um usuário técnico por client (<code>service-account-provider-a</code>). Os papéis são dados a esse usuário.</li>
+  </ul>
+
+  <h3>Um detalhe do Docker: dois endereços para o mesmo Keycloak</h3>
+  <p>Do seu computador o Keycloak é <code>localhost:8081</code>; de dentro da rede do Docker, a aplicação o encontra como <code>keycloak:8080</code>. O <code>iss</code> do token depende do endereço usado para pedi-lo, e isso quebraria a validação.</p>
+  <ul>
+    <li><code>KC_HOSTNAME=http://localhost:8081</code> fixa o <code>iss</code> de todos os tokens.</li>
+    <li>A aplicação recebe duas configurações: <code>AUTH_ISSUER</code> (o <code>iss</code> esperado) e <code>AUTH_JWKS_URL</code> (de onde baixar as chaves, pela rede interna).</li>
+  </ul>
+
+  <h2>6. O verificador</h2>
+<pre><code>keys := oidc.NewRemoteKeySet(context.Background(), cfg.JWKSURL)
+verifier := oidc.NewVerifier(cfg.Issuer, keys, &amp;oidc.Config{
+    ClientID:             cfg.Audience,
+    SupportedSigningAlgs: []string{oidc.RS256},
+})</code></pre>
+  <ul>
+    <li>A biblioteca <code>github.com/coreos/go-oidc/v3</code> confere assinatura, <code>iss</code>, <code>aud</code> e <code>exp</code>. Não vale escrever isso à mão: erros de validação de token são falhas de segurança.</li>
+    <li><code>NewRemoteKeySet</code> baixa as chaves na primeira requisição, guarda em cache e baixa de novo quando aparece um <code>kid</code> desconhecido. Isso cobre a <strong>rotação de chaves</strong> do Keycloak.</li>
+    <li>Fixar <code>RS256</code> impede o ataque clássico do token com <code>"alg": "none"</code> (sem assinatura).</li>
+    <li>O <code>context.Background()</code> é proposital: o conjunto de chaves usa esse contexto nas buscas futuras, e um contexto de requisição seria cancelado logo.</li>
+  </ul>
+<pre><code>type accessTokenClaims struct {
+    AuthorizedParty string `json:"azp"`
+    ProviderID      string `json:"provider_id"`
+    RealmAccess     struct {
+        Roles []string `json:"roles"`
+    } `json:"realm_access"`
+}</code></pre>
+  <p>Depois de validado, o conteúdo vira um <code>Principal{ClientID, ProviderID, Roles}</code>. Um token com papel <code>provider</code> e sem <code>provider_id</code> é recusado: não daria para saber de quais transações ele é dono.</p>
+
+  <h2>7. Middleware em Go e a identidade no <code>context</code></h2>
+  <p>Em Go um middleware é uma função que recebe um <code>http.Handler</code> e devolve outro, que faz algo antes (ou em vez) de chamar o próximo. É o mesmo papel do middleware do ASP.NET ou do Express.</p>
+<pre><code>func authenticate(verifier TokenVerifier, logger *slog.Logger) func(http.Handler) http.Handler {
+    return func(next http.Handler) http.Handler {
+        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+            raw, ok := bearerToken(r)
+            if !ok { /* 401 */ return }
+            principal, err := verifier.Verify(r.Context(), raw)
+            if err != nil { /* 401 */ return }
+            next.ServeHTTP(w, r.WithContext(auth.WithPrincipal(r.Context(), principal)))
+        })
+    }
+}</code></pre>
+  <ul>
+    <li><code>r.WithContext</code> cria uma cópia da requisição com um contexto novo, que carrega o <code>Principal</code>. Os handlers o leem com <code>auth.PrincipalFrom(ctx)</code>.</li>
+    <li>A chave do contexto é um tipo vazio privado (<code>type principalKey struct{}</code>). Nenhum outro pacote consegue criar a mesma chave e sobrescrever o valor.</li>
+    <li>O middleware depende da interface <code>TokenVerifier</code>, não do verificador concreto. Os testes HTTP usam um verificador falso; o verdadeiro é testado no pacote <code>auth</code>.</li>
+  </ul>
+
+  <h3>Rotas com o chi</h3>
+<pre><code>router.Get("/health/live", health.Live)        // público
+
+router.Group(func(r chi.Router) {
+    r.Use(authenticate(verifier, logger))
+
+    r.Group(func(r chi.Router) {
+        r.Use(requireRole(logger, auth.RoleInternal))
+        r.Post("/wallets", wallets.Open)
+        ...
+    })
+    r.With(requireRole(logger, auth.RoleProvider)).Post("/wagering/transactions", wagering.Process)
+    ...
+})</code></pre>
+  <p><code>Group</code> cria um conjunto de rotas que compartilha middlewares; <code>With</code> aplica um middleware a uma rota só. Uma rota nova dentro do grupo já nasce protegida.</p>
+
+  <h2>8. As regras de acesso</h2>
+  <table>
+    <thead><tr><th>Situação</th><th>Resposta</th></tr></thead>
+    <tbody>
+      <tr><td>Sem token, malformado, assinatura inválida, expirado, <code>iss</code> ou <code>aud</code> errados</td><td><code>401</code> + <code>WWW-Authenticate: Bearer</code></td></tr>
+      <tr><td><code>provider-a</code> em <code>/wallets</code>; <code>wallet-service</code> enviando aposta</td><td><code>403</code></td></tr>
+      <tr><td><code>provider-a</code> enviando <code>"providerId": "provider-b"</code></td><td><code>403</code>, nada gravado</td></tr>
+      <tr><td><code>provider-b</code> lendo transação do <code>provider-a</code></td><td><code>404</code>, corpo idêntico ao de transação inexistente</td></tr>
+    </tbody>
+  </table>
+  <div class="note"><strong>Por que 404 e não 403 na consulta.</strong> Um <code>403</code> confirmaria que a transação existe. Respondendo exatamente como uma transação inexistente, o provedor não aprende nada sobre os outros. O teste compara os dois corpos byte a byte.</div>
+  <p>O replay entre provedores ficou resolvido sem código novo: a chave de idempotência é única por provedor, e o provedor agora vem do token. Se <code>provider-b</code> usa a mesma chave de <code>provider-a</code>, ele cria uma operação dele.</p>
+
+  <h2>9. Como foi testado</h2>
+  <ul>
+    <li><strong>Verificador:</strong> tokens assinados no próprio teste com uma chave RSA gerada na hora e um servidor JWKS falso (<code>httptest</code>). Válido, expirado, outro <code>iss</code>, outra <code>aud</code>, chave desconhecida, assinatura adulterada, <code>alg: none</code>, sem <code>provider_id</code>, texto qualquer. Rotação: o servidor troca a chave e o token novo é aceito; dois tokens com a mesma chave buscam o JWKS uma vez só.</li>
+    <li><strong>HTTP:</strong> todas as seis rotas de negócio sem token e com token falso dão <code>401</code>; health dá <code>200</code>; os <code>403</code> não gravam nada; os <code>404</code> têm o mesmo corpo de transação inexistente.</li>
+    <li><strong>Keycloak real:</strong> com <code>curl</code> no Docker Compose, os três clients obtêm token; segredo errado não obtém; todos os casos acima repetidos com tokens de verdade.</li>
+    <li><code>go test -race</code> passa; cobertura de <code>internal/</code> em 89,4%.</li>
+  </ul>
+  <div class="warn"><strong>Limites.</strong> O token expirado só foi testado com tokens assinados no teste. Se o Keycloak estiver fora e chegar um token com chave ainda não vista, a resposta é <code>401</code>, não <code>503</code>. A política de acesso às filas foi para a spec 11, junto com o LocalStack.</div>
+
+  <h2>10. Para fixar</h2>
+  <dl class="qa">
+    <dt>Qual a diferença entre 401 e 403?</dt>
+    <dd><code>401</code>: não sei quem você é (sem token ou token inválido). <code>403</code>: sei quem você é e você não pode fazer isso.</dd>
+
+    <dt>Como o serviço confere um token sem chamar o Keycloak?</dt>
+    <dd>Confere a assinatura com a chave pública do JWKS, que fica em cache, e confere <code>iss</code>, <code>aud</code> e <code>exp</code>.</dd>
+
+    <dt>O que acontece quando o Keycloak troca de chave?</dt>
+    <dd>Chega um token com <code>kid</code> desconhecido e o verificador baixa o JWKS de novo.</dd>
+
+    <dt>Por que o <code>providerId</code> do corpo não basta?</dt>
+    <dd>Qualquer um escreve qualquer coisa no corpo. Só o token é assinado.</dd>
+
+    <dt>Por que transação de outro provedor responde 404?</dt>
+    <dd>Para não revelar que ela existe.</dd>
+
+    <dt>Por que a chave do <code>context</code> é um tipo privado?</dt>
+    <dd>Para que nenhum outro pacote consiga ler ou sobrescrever o valor por engano.</dd>
+  </dl>
+
+  <h3>Ordem de leitura do código</h3>
+  <ol>
+    <li><code>deploy/keycloak/wagering-realm.json</code></li>
+    <li><code>internal/infra/auth/principal.go</code> e <code>verifier.go</code></li>
+    <li><code>internal/infra/httpapi/auth.go</code> e o <code>NewRouter</code> em <code>server.go</code></li>
+    <li><code>internal/infra/auth/verifier_test.go</code></li>
+    <li><code>internal/infra/httpapi/auth_test.go</code></li>
   </ol>
 </section>
 
