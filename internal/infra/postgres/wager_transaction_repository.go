@@ -93,6 +93,16 @@ func (r *WagerTransactionRepository) GetByIdempotencyKey(ctx context.Context, pr
 	))
 }
 
+func (r *WagerTransactionRepository) HasProcessedReversal(ctx context.Context, transactionID string) (bool, error) {
+	var exists bool
+	err := querierFrom(ctx, r.pool).QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM wager_transactions
+			 WHERE reference_transaction_id = $1 AND status = 'PROCESSED' AND kind IN ('REFUND', 'ROLLBACK')
+		)`, transactionID).Scan(&exists)
+	return exists, translate(err)
+}
+
 func resultBalanceColumns(tx *domain.WagerTransaction) (*int64, *string) {
 	balance, observed := tx.ResultBalance()
 	if !observed {

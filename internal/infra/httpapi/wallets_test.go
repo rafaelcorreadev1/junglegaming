@@ -59,7 +59,12 @@ func newTestEnv(t *testing.T) *testEnv {
 		application.NewListLedger(env.wallets, env.ledger),
 		logger,
 	)
-	env.router = NewRouter(NewHealthHandler(pool, logger), walletHandler, env.ids, logger)
+	wageringHandler := NewWageringHandler(
+		application.NewProcessWagerTransaction(env.tx, env.wallets, env.wagers, env.ledger, outbox, env.clock, env.ids),
+		application.NewGetWagerTransaction(env.wagers),
+		logger,
+	)
+	env.router = NewRouter(NewHealthHandler(pool, logger), walletHandler, wageringHandler, env.ids, logger)
 	return env
 }
 

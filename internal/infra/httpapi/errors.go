@@ -44,6 +44,8 @@ var sentinelErrors = []struct {
 	{application.ErrWalletNotFound, http.StatusNotFound, "WALLET_NOT_FOUND"},
 	{application.ErrTransactionNotFound, http.StatusNotFound, "TRANSACTION_NOT_FOUND"},
 	{application.ErrWalletAlreadyExists, http.StatusConflict, "WALLET_ALREADY_EXISTS"},
+	{application.ErrIdempotencyConflict, http.StatusConflict, "IDEMPOTENCY_KEY_CONFLICT"},
+	{application.ErrExternalTransactionConflict, http.StatusConflict, "EXTERNAL_TRANSACTION_CONFLICT"},
 	{application.ErrUnavailable, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE"},
 	{context.DeadlineExceeded, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE"},
 	{context.Canceled, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE"},

@@ -16,6 +16,8 @@ var (
 	ErrDuplicateExternalTransaction = errors.New("external transaction already registered")
 	ErrDuplicateIdempotencyKey      = errors.New("idempotency key already used")
 	ErrAlreadyReversed              = errors.New("referenced transaction already has a processed reversal")
+	ErrIdempotencyConflict          = errors.New("idempotency key reused with a different payload")
+	ErrExternalTransactionConflict  = errors.New("external transaction already sent with another idempotency key")
 	ErrConcurrentUpdate             = errors.New("wallet was changed by another writer")
 
 	// ErrUnavailable marks failures worth retrying: the same call may succeed later without any change.
@@ -45,6 +47,8 @@ type WagerTransactionRepository interface {
 	Get(ctx context.Context, id string) (*domain.WagerTransaction, error)
 	GetByExternalID(ctx context.Context, providerID, externalTransactionID string) (*domain.WagerTransaction, error)
 	GetByIdempotencyKey(ctx context.Context, providerID, idempotencyKey string) (*domain.WagerTransaction, error)
+	// HasProcessedReversal reports whether a REFUND or ROLLBACK of the transaction was already processed.
+	HasProcessedReversal(ctx context.Context, transactionID string) (bool, error)
 }
 
 // LedgerRecord pairs an entry with its insertion order, which exists only in storage.

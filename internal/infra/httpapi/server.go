@@ -20,6 +20,7 @@ var Module = fx.Module("httpapi",
 	fx.Provide(
 		NewHealthHandler,
 		NewWalletHandler,
+		NewWageringHandler,
 		NewRouter,
 		NewServer,
 	),
@@ -27,7 +28,7 @@ var Module = fx.Module("httpapi",
 	fx.Invoke(func(*http.Server) {}),
 )
 
-func NewRouter(health *HealthHandler, wallets *WalletHandler, ids application.IDGenerator, logger *slog.Logger) http.Handler {
+func NewRouter(health *HealthHandler, wallets *WalletHandler, wagering *WageringHandler, ids application.IDGenerator, logger *slog.Logger) http.Handler {
 	router := chi.NewRouter()
 	router.Use(correlationID(ids), recoverPanic(logger))
 
@@ -37,6 +38,10 @@ func NewRouter(health *HealthHandler, wallets *WalletHandler, ids application.ID
 	router.Post("/wallets", wallets.Open)
 	router.Get("/wallets/{walletId}", wallets.Get)
 	router.Get("/wallets/{walletId}/ledger", wallets.Ledger)
+
+	router.Post("/wagering/transactions", wagering.Process)
+	router.Get("/wagering/transactions/{transactionId}", wagering.GetByID)
+	router.Get("/providers/{providerId}/wagering/transactions/{externalTransactionId}", wagering.GetByExternalID)
 	return router
 }
 

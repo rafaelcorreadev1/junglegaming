@@ -28,7 +28,7 @@ Uma transação aceita **uma única** reversão processada, de qualquer tipo. Is
 | `ROLLBACK(REFUND)` duas vezes | O segundo é rejeitado com `ALREADY_REVERSED` |
 | `ROLLBACK(ROLLBACK)` | Rejeitado com `REFERENCE_KIND_NOT_ALLOWED` |
 
-O domínio (spec 03) já aplica essa regra a partir do campo `Reference.Reversed`. Esta spec entrega a consulta que preenche o campo e o índice único que garante a regra no banco.
+O domínio (spec 03) aplica essa regra a partir do campo `Reference.Reversed`; o índice único está na spec 04 e a consulta que preenche o campo, na spec 07. O caso de uso da spec 07 já processa reversões cuja referência existe e grava `PENDING_REFERENCE` quando não existe. **Esta spec entrega o que falta:** o worker que retoma as pendentes, o backoff, a expiração e os testes de reversão concorrente.
 
 ## Requisitos — referência indisponível
 
