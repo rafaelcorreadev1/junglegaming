@@ -171,7 +171,7 @@
   <p class="sub">O que foi construído em cada spec, por que foi feito assim e quais conceitos de Go aparecem, para quem vem de C#, Python e TypeScript.</p>
   <div class="meta">
     Repositório: github.com/rafaelcorreadev1/junglegaming<br>
-    Atualizado até a spec 10 · 13/10/2026
+    Atualizado até a spec 11 · 13/10/2026
   </div>
 </section>
 
@@ -203,7 +203,7 @@
       <tr><td>08</td><td>Reversões e referências pendentes</td><td class="status done">Concluída</td></tr>
       <tr><td>09</td><td>Autenticação e autorização</td><td class="status done">Concluída</td></tr>
       <tr><td>10</td><td>Outbox e eventos</td><td class="status done">Concluída</td></tr>
-      <tr><td>11</td><td>Consumidor SQS, inbox e DLQ</td><td class="status todo">A fazer</td></tr>
+      <tr><td>11</td><td>Consumidor SQS, inbox e DLQ</td><td class="status done">Concluída</td></tr>
       <tr><td>12</td><td>Reconciliação</td><td class="status todo">A fazer</td></tr>
       <tr><td>13</td><td>Observabilidade</td><td class="status todo">A fazer</td></tr>
       <tr><td>14</td><td>Ciclo de vida Fx e shutdown</td><td class="status todo">A fazer</td></tr>
@@ -2543,6 +2543,184 @@ RETURNING ...</code></pre>
     <li><code>internal/infra/sqs/publisher.go</code> e <code>deploy/localstack/init-queues.sh</code></li>
     <li><code>internal/infra/worker/poller.go</code> e <code>module.go</code></li>
     <li><code>internal/application/publish_outbox_test.go</code></li>
+  </ol>
+</section>
+
+<!-- ============================ SPEC 11 ============================ -->
+<section class="chapter">
+  <div class="chapter-label">Spec 11</div>
+  <h1>Consumidor SQS, inbox e DLQ</h1>
+  <p class="lead">A segunda porta de entrada: provedores também podem mandar operações pela fila <code>wager-transactions.fifo</code>. O resultado financeiro tem que ser o mesmo do HTTP, mesmo com a mensagem chegando duas vezes, o processo morrendo no meio ou o banco fora do ar.</p>
+
+  <h2>1. O que a spec pedia</h2>
+  <ul>
+    <li>Usar o <strong>mesmo</strong> caso de uso do HTTP, com <code>data.idempotencyKey</code> como chave.</li>
+    <li>Inbox: gravar <code>(consumerName, messageId)</code> e o hash do corpo na mesma transação do saldo, ledger e outbox.</li>
+    <li>Remover a mensagem da fila só depois do commit.</li>
+    <li>Falha transitória: tentar de novo com backoff. Erro permanente ou tentativas esgotadas: DLQ.</li>
+    <li>No <code>SIGTERM</code>, parar de buscar e terminar ou devolver o que está em andamento.</li>
+    <li>Política de acesso nas filas, sem deixar de validar no consumidor.</li>
+  </ul>
+
+  <h2>2. Como o SQS entrega</h2>
+  <p>Receber uma mensagem do SQS <strong>não</strong> a remove. Ela fica invisível por um tempo (o <em>visibility timeout</em>) e, se ninguém chamar <code>DeleteMessage</code> até lá, volta para a fila. Isso protege contra consumidor morto, mas cria a reentrega: a mesma mensagem pode ser processada duas vezes.</p>
+  <table>
+    <thead><tr><th>Conceito</th><th>O que é</th></tr></thead>
+    <tbody>
+      <tr><td>Visibility timeout</td><td>Quanto tempo a mensagem recebida fica escondida dos outros consumidores</td></tr>
+      <tr><td>Long polling</td><td>O receive espera até 20s por mensagens, em vez de voltar vazio na hora</td></tr>
+      <tr><td><code>ApproximateReceiveCount</code></td><td>Quantas vezes a mensagem já foi recebida</td></tr>
+      <tr><td>Redrive policy</td><td>Depois de <code>maxReceiveCount</code> recebimentos, o SQS move a mensagem para a DLQ</td></tr>
+      <tr><td>DLQ (<em>dead-letter queue</em>)</td><td>Fila onde ficam as mensagens que não deram certo, para alguém investigar</td></tr>
+      <tr><td>FIFO e <code>MessageGroupId</code></td><td>Ordem garantida dentro de um grupo; grupos diferentes podem ser processados em paralelo</td></tr>
+    </tbody>
+  </table>
+
+  <h2>3. A inbox</h2>
+  <p>A inbox é uma tabela que lembra quais mensagens já foram tratadas. O ponto importante é que ela é gravada <strong>na mesma transação</strong> da mudança de saldo:</p>
+  <ol class="flow">
+    <li><code>INSERT ... ON CONFLICT DO NOTHING</code> em <code>inbox_messages</code>.</li>
+    <li>Linha já existia com o mesmo hash: a mensagem já foi tratada. Nada é refeito.</li>
+    <li>Linha já existia com outro hash: o produtor reutilizou o <code>messageId</code> para outra coisa. Erro permanente.</li>
+    <li>Primeira vez: roda o caso de uso (trava a carteira, idempotência, regras, ledger, outbox) e marca <code>completed_at</code>.</li>
+    <li>Commit. Só então <code>DeleteMessage</code>.</li>
+  </ol>
+  <p>Se o processo morrer depois do commit e antes do delete, a mensagem volta, cai no passo 2 e é removida sem segundo débito. Se morrer antes do commit, o rollback apaga também a linha da inbox, e a reentrega começa do zero.</p>
+  <div class="note"><strong>Por que <code>ON CONFLICT DO NOTHING</code>?</strong> Um <code>INSERT</code> comum que bate na chave primária gera erro, e no PostgreSQL um erro aborta a transação inteira. Com <code>DO NOTHING</code> o comando só não insere, e a transação continua usável para consultar a linha existente.</div>
+
+  <h3>A inbox não é redundante com a idempotência?</h3>
+  <p>Em parte, é. A chave de idempotência já impediria o segundo débito. A inbox acrescenta duas coisas: reconhece a mensagem repetida <em>antes</em> de rodar o caso de uso, e detecta o mesmo <code>messageId</code> com outro corpo, coisa que a chave de idempotência não vê.</p>
+
+  <h3>E a deduplicação do FIFO?</h3>
+  <p>Ela descarta envios com o mesmo <code>MessageDeduplicationId</code> por 5 minutos. Não cobre reentrega (é a mesma mensagem voltando, não um envio novo), nem um reenvio depois de 5 minutos. A inbox não tem prazo.</p>
+
+  <h2>4. Um caso de uso, duas portas</h2>
+  <p>O <code>ProcessWagerTransaction.Execute</code> da spec 07 tinha três partes: validar e calcular o hash, abrir a transação (repetindo se perder uma disputa de chave única) e processar. Separei essas partes para o consumidor montar a sua versão:</p>
+<pre><code>err = withinTxRetryingRaces(ctx, h.tx, func(ctx context.Context) error {
+    stored, first, err := h.inbox.Receive(ctx, WagerConsumerName, msg.MessageID, msg.PayloadHash, now)
+    ...
+    result.ProcessWagerResult, err = h.process.process(ctx, msg.Wager, hash)   // mesmo código do HTTP
+    ...
+    return h.inbox.Complete(ctx, WagerConsumerName, msg.MessageID, now)
+})</code></pre>
+  <ul>
+    <li><code>process</code> é minúsculo, portanto privado do pacote <code>application</code>. O caso de uso da inbox está no mesmo pacote e pode chamá-lo; o pacote <code>sqs</code> não pode.</li>
+    <li>A repetição recomeça uma <strong>transação nova</strong>, com a inbox incluída: depois de uma violação de unicidade a transação antiga está abortada.</li>
+    <li>HTTP e SQS calculam o mesmo hash de negócio (spec 07). Se a mesma operação chega pelas duas portas, quem chega depois pega o lock da carteira, encontra a operação gravada e recebe um replay.</li>
+  </ul>
+
+  <h2>5. Decidindo o destino de cada mensagem</h2>
+  <table>
+    <thead><tr><th>Resultado</th><th>Ação</th></tr></thead>
+    <tbody>
+      <tr><td>Processada, rejeitada por regra de negócio, <code>PENDING_REFERENCE</code> ou já tratada</td><td>Remove</td></tr>
+      <tr><td>JSON inválido, provedor fora da lista, validação, carteira inexistente, conflito de chave ou de <code>messageId</code></td><td>Manda para a DLQ com o motivo e remove</td></tr>
+      <tr><td>Qualquer outro erro (banco fora, deadlock, erro desconhecido)</td><td>Esconde de novo por 2s, 4s, 8s... até 5min</td></tr>
+      <tr><td>Interrompida pelo shutdown</td><td>Visibilidade 0: volta na hora para outra instância</td></tr>
+    </tbody>
+  </table>
+  <p>A regra para erro desconhecido é tentar de novo: na dúvida, outra tentativa é mais segura do que descartar. O <code>maxReceiveCount = 5</code> garante que isso termina: na sexta recebida, o SQS move a mensagem para a DLQ.</p>
+<pre><code>func permanent(err error) bool {
+    var validation *domain.ValidationError
+    if errors.As(err, &amp;validation) {
+        return true
+    }
+    for _, target := range []error{errInvalidMessage, application.ErrWalletNotFound, ...} {
+        if errors.Is(err, target) {
+            return true
+        }
+    }
+    return false
+}</code></pre>
+  <p><code>errors.Is</code> percorre a cadeia de erros embrulhados com <code>%w</code>; <code>errors.As</code> faz o mesmo procurando um <strong>tipo</strong>. Assim o consumidor classifica erros criados lá no repositório sem conhecer os detalhes.</p>
+
+  <h2>6. Ordem por carteira</h2>
+  <p>Um receive traz até 10 mensagens, possivelmente de várias carteiras. O consumidor agrupa por <code>MessageGroupId</code>, roda as carteiras em paralelo (<code>sync.WaitGroup</code> com <code>wg.Go</code>) e as mensagens de cada carteira em sequência.</p>
+  <p>Se a primeira mensagem de uma carteira falha, as seguintes não podem passar na frente. A AWS documenta que não entrega outra mensagem de um grupo enquanto uma dele está invisível. No teste, o LocalStack entregou. Por isso as seguintes são escondidas pelo mesmo tempo da que falhou e voltam junto com ela. Foi um teste que falhou que mostrou isso.</p>
+
+  <h2>7. Desligando sem perder mensagem</h2>
+  <p>O consumidor usa dois contextos:</p>
+  <table>
+    <thead><tr><th>Contexto</th><th>Cancelado quando</th><th>Efeito</th></tr></thead>
+    <tbody>
+      <tr><td>Busca</td><td>Logo no <code>SIGTERM</code></td><td>O long polling é interrompido; nada novo é recebido</td></tr>
+      <tr><td>Processamento</td><td>3s antes do prazo de parada do Fx</td><td>A transação faz rollback e a mensagem volta com visibilidade 0</td></tr>
+    </tbody>
+  </table>
+  <p>Depois do tratamento, as chamadas ao SQS (remover, devolver, mandar para a DLQ) usam <code>context.WithoutCancel</code> com um limite de 5s. Sem isso, um cancelamento chegando logo depois do commit impediria o delete. Isso não causaria erro financeiro, porque a inbox reconhece a reentrega, mas a mensagem voltaria à toa.</p>
+  <p>No Compose, <code>docker compose stop app</code> encerrou em menos de 1 segundo, com código de saída 0.</p>
+
+  <h2>8. Política de acesso às filas</h2>
+  <p>O desafio pede que a mensageria seja protegida pelo broker. O script do LocalStack grava em cada fila uma política no formato do IAM:</p>
+  <table>
+    <thead><tr><th>Fila</th><th>Permissões</th></tr></thead>
+    <tbody>
+      <tr><td><code>wager-transactions.fifo</code></td><td>Provedores enviam; <code>wagering-service</code> recebe, remove e muda a visibilidade</td></tr>
+      <tr><td><code>wager-transactions-dlq.fifo</code></td><td><code>wagering-service</code> envia; um papel de operador lê e redireciona</td></tr>
+      <tr><td><code>wager-events.fifo</code></td><td><code>wagering-service</code> envia; <code>wallet-service</code> consome</td></tr>
+    </tbody>
+  </table>
+  <div class="warn"><strong>Limite honesto.</strong> O LocalStack, na configuração usada aqui, grava as políticas mas não as aplica. Na AWS elas valem. Por isso o consumidor também confere o provedor numa lista (<code>WAGER_QUEUE_PROVIDERS</code>) e o caso de uso valida tudo como no HTTP.</div>
+
+  <h2>9. Valores escolhidos</h2>
+  <table>
+    <thead><tr><th>Parâmetro</th><th>Valor</th><th>Motivo</th></tr></thead>
+    <tbody>
+      <tr><td><code>maxReceiveCount</code></td><td>5</td><td>Com o backoff, cerca de 1 minuto de banco fora antes da DLQ</td></tr>
+      <tr><td>Visibility timeout</td><td>30s</td><td>Folga sobre uma transação; consumidor morto devolve a mensagem em até 30s</td></tr>
+      <tr><td>Lote</td><td>10</td><td>Máximo do SQS</td></tr>
+      <tr><td>Long polling</td><td>20s</td><td>Máximo do SQS</td></tr>
+      <tr><td>Retenção da DLQ</td><td>14 dias</td><td>Máximo do SQS, para dar tempo de investigar</td></tr>
+    </tbody>
+  </table>
+
+  <h2>10. Como foi testado</h2>
+  <table>
+    <thead><tr><th>Cenário</th><th>Resultado verificado</th></tr></thead>
+    <tbody>
+      <tr><td>Mesma mensagem duas vezes</td><td>Um débito; a segunda vem como já tratada</td></tr>
+      <tr><td>Mesmo <code>messageId</code>, outro corpo</td><td>Conflito; saldo intacto</td></tr>
+      <tr><td>HTTP e SQS juntos, 20 rodadas com 4 disputas cada</td><td>Um débito por operação</td></tr>
+      <tr><td>Commit feito, delete não (consumidor "morre")</td><td>Reentrega reconhecida pela inbox; um débito</td></tr>
+      <tr><td>Banco fora (pool apontando para porta fechada)</td><td>Mensagem fica na fila; volta e é processada quando o banco volta</td></tr>
+      <tr><td>JSON inválido, provedor desconhecido, conflitos</td><td>Na DLQ com o motivo; nada na origem</td></tr>
+      <tr><td>Erro transitório sempre</td><td>Depois de <code>maxReceiveCount</code>, o redrive move para a DLQ</td></tr>
+      <tr><td>Primeira mensagem de uma carteira falha</td><td>A segunda espera; a outra carteira segue</td></tr>
+      <tr><td>Stop com mensagem travada</td><td>Ela volta na hora, no segundo recebimento</td></tr>
+    </tbody>
+  </table>
+  <ul>
+    <li>Testes de propósito com defeito: ignorando a inbox, quatro testes falharam; tratando todo erro como permanente, seis falharam. Voltei o código.</li>
+    <li>Ponta a ponta no Compose: mensagem duplicada, HTTP e SQS juntos, três casos de DLQ e o PostgreSQL parado e religado; o saldo terminou certo em todos.</li>
+    <li><code>go test -race</code> passa no container; cobertura de <code>internal/</code> em 89,5%.</li>
+  </ul>
+
+  <h2>11. Para fixar</h2>
+  <dl class="qa">
+    <dt>Por que remover a mensagem só depois do commit?</dt>
+    <dd>Se removesse antes e o commit falhasse, a operação se perderia. Depois do commit, o pior caso é uma reentrega, que a inbox absorve.</dd>
+
+    <dt>O que a inbox faz que a deduplicação do FIFO não faz?</dt>
+    <dd>Não tem prazo, cobre reentregas e detecta o mesmo <code>messageId</code> com outro corpo.</dd>
+
+    <dt>Por que um erro desconhecido é tratado como transitório?</dt>
+    <dd>Descartar é irreversível; tentar de novo não. O <code>maxReceiveCount</code> limita as tentativas.</dd>
+
+    <dt>Por que <code>PENDING_REFERENCE</code> remove a mensagem?</dt>
+    <dd>A pendência já está gravada no banco e o worker da spec 08 continua dali. A mensagem não tem mais nada a fazer.</dd>
+
+    <dt>Por que dois contextos no consumidor?</dt>
+    <dd>Parar de buscar e interromper o trabalho em andamento são decisões em momentos diferentes do shutdown.</dd>
+  </dl>
+
+  <h3>Ordem de leitura do código</h3>
+  <ol>
+    <li><code>internal/application/handle_wager_message.go</code></li>
+    <li><code>internal/infra/postgres/inbox_repository.go</code></li>
+    <li><code>internal/infra/sqs/message.go</code></li>
+    <li><code>internal/infra/sqs/consumer.go</code></li>
+    <li><code>deploy/localstack/init-queues.sh</code></li>
+    <li><code>internal/infra/sqs/consumer_integration_test.go</code></li>
   </ol>
 </section>
 
