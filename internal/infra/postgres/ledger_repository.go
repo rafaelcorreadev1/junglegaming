@@ -31,6 +31,21 @@ func (r *LedgerRepository) Insert(ctx context.Context, entry domain.LedgerEntry)
 	return translate(err)
 }
 
+func (r *LedgerRepository) Summarize(ctx context.Context, walletID string) (application.LedgerSummary, error) {
+	var summary application.LedgerSummary
+	// SUM of bigint is numeric; the cast back fails loudly instead of wrapping if the total ever left the int64 range.
+	err := querierFrom(ctx, r.pool).QueryRow(ctx, `
+		SELECT COALESCE(SUM(CASE direction WHEN 'CREDIT' THEN amount_minor ELSE -amount_minor END), 0)::bigint, count(*)
+		  FROM wallet_ledger_entries
+		 WHERE wallet_id = $1`,
+		walletID,
+	).Scan(&summary.NetMinorUnits, &summary.Entries)
+	if err != nil {
+		return application.LedgerSummary{}, translate(err)
+	}
+	return summary, nil
+}
+
 func (r *LedgerRepository) ListByWallet(ctx context.Context, walletID string, afterSequence int64, limit int) ([]application.LedgerRecord, error) {
 	rows, err := querierFrom(ctx, r.pool).Query(ctx, `
 		SELECT sequence, id::text, wallet_id::text, transaction_id::text, direction, amount_minor, currency,

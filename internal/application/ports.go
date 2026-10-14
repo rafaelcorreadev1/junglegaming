@@ -30,6 +30,8 @@ var (
 type TxManager interface {
 	// WithinTx commits when fn returns nil and rolls back otherwise. Repositories called with the ctx given to fn join the transaction.
 	WithinTx(ctx context.Context, fn func(ctx context.Context) error) error
+	// WithinSnapshot runs fn in a read-only transaction where every read sees the same committed state.
+	WithinSnapshot(ctx context.Context, fn func(ctx context.Context) error) error
 }
 
 type WalletRepository interface {
@@ -71,6 +73,13 @@ type LedgerRepository interface {
 	Insert(ctx context.Context, entry domain.LedgerEntry) error
 	// ListByWallet returns up to limit records with a sequence greater than afterSequence, oldest first.
 	ListByWallet(ctx context.Context, walletID string, afterSequence int64, limit int) ([]LedgerRecord, error)
+	Summarize(ctx context.Context, walletID string) (LedgerSummary, error)
+}
+
+type LedgerSummary struct {
+	// NetMinorUnits is credits minus debits.
+	NetMinorUnits int64
+	Entries       int
 }
 
 type OutboxMessage struct {
@@ -111,6 +120,10 @@ type InboxRepository interface {
 	// Receive records the first delivery of a message and reports true; for a later delivery it returns the stored record and false.
 	Receive(ctx context.Context, consumerName, messageID, payloadHash string, now time.Time) (InboxRecord, bool, error)
 	Complete(ctx context.Context, consumerName, messageID string, now time.Time) error
+}
+
+type ReconciliationReporter interface {
+	Report(ctx context.Context, reconciliation Reconciliation)
 }
 
 type EventPublisher interface {

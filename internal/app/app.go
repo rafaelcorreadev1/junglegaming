@@ -32,6 +32,7 @@ func Options(cfg config.Config) fx.Option {
 			application.NewOpenWallet,
 			application.NewGetWallet,
 			application.NewListLedger,
+			application.NewReconcileWallet,
 			application.NewProcessWagerTransaction,
 			application.NewGetWagerTransaction,
 			application.NewResolvePendingReferences,

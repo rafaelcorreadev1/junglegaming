@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/fx"
 
 	"wagering-service/internal/application"
@@ -36,6 +38,7 @@ func NewRouter(
 	wagering *WageringHandler,
 	verifier TokenVerifier,
 	ids application.IDGenerator,
+	registry *prometheus.Registry,
 	logger *slog.Logger,
 ) http.Handler {
 	router := chi.NewRouter()
@@ -43,6 +46,7 @@ func NewRouter(
 
 	router.Get("/health/live", health.Live)
 	router.Get("/health/ready", health.Ready)
+	router.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
 
 	router.Group(func(r chi.Router) {
 		r.Use(authenticate(verifier, logger))
@@ -52,6 +56,7 @@ func NewRouter(
 			r.Post("/wallets", wallets.Open)
 			r.Get("/wallets/{walletId}", wallets.Get)
 			r.Get("/wallets/{walletId}/ledger", wallets.Ledger)
+			r.Post("/wallets/{walletId}/reconciliation", wallets.Reconcile)
 		})
 
 		r.With(requireRole(logger, auth.RoleProvider)).Post("/wagering/transactions", wagering.Process)

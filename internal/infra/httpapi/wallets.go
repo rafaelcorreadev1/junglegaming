@@ -18,14 +18,21 @@ import (
 const maxRequestBodyBytes = 1 << 20
 
 type WalletHandler struct {
-	open   *application.OpenWallet
-	get    *application.GetWallet
-	ledger *application.ListLedger
-	logger *slog.Logger
+	open      *application.OpenWallet
+	get       *application.GetWallet
+	ledger    *application.ListLedger
+	reconcile *application.ReconcileWallet
+	logger    *slog.Logger
 }
 
-func NewWalletHandler(open *application.OpenWallet, get *application.GetWallet, ledger *application.ListLedger, logger *slog.Logger) *WalletHandler {
-	return &WalletHandler{open: open, get: get, ledger: ledger, logger: logger}
+func NewWalletHandler(
+	open *application.OpenWallet,
+	get *application.GetWallet,
+	ledger *application.ListLedger,
+	reconcile *application.ReconcileWallet,
+	logger *slog.Logger,
+) *WalletHandler {
+	return &WalletHandler{open: open, get: get, ledger: ledger, reconcile: reconcile, logger: logger}
 }
 
 type openWalletRequest struct {
@@ -56,6 +63,15 @@ type ledgerPageResponse struct {
 	Items []ledgerEntryResponse `json:"items"`
 	// NextCursor is null on the last page.
 	NextCursor *string `json:"nextCursor"`
+}
+
+type reconciliationResponse struct {
+	WalletID          string       `json:"walletId"`
+	StoredBalance     domain.Money `json:"storedBalance"`
+	CalculatedBalance domain.Money `json:"calculatedBalance"`
+	Difference        domain.Money `json:"difference"`
+	Consistent        bool         `json:"consistent"`
+	CheckedEntries    int          `json:"checkedEntries"`
 }
 
 func toWalletResponse(wallet *domain.Wallet) walletResponse {
@@ -99,6 +115,27 @@ func (h *WalletHandler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, toWalletResponse(wallet))
+}
+
+func (h *WalletHandler) Reconcile(w http.ResponseWriter, r *http.Request) {
+	walletID, err := walletIDParam(r)
+	if err != nil {
+		writeError(w, r, h.logger, err)
+		return
+	}
+	result, err := h.reconcile.Execute(r.Context(), walletID)
+	if err != nil {
+		writeError(w, r, h.logger, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, reconciliationResponse{
+		WalletID:          result.WalletID,
+		StoredBalance:     result.StoredBalance,
+		CalculatedBalance: result.CalculatedBalance,
+		Difference:        result.Difference,
+		Consistent:        result.Consistent(),
+		CheckedEntries:    result.CheckedEntries,
+	})
 }
 
 func (h *WalletHandler) Ledger(w http.ResponseWriter, r *http.Request) {

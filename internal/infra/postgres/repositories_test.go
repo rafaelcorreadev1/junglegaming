@@ -613,3 +613,53 @@ func TestInboxRowDisappearsWithARolledBackTransaction(t *testing.T) {
 		t.Errorf("inbox has %d rows after rollback, want 0", n)
 	}
 }
+
+func TestLedgerSummarizeNetsCreditsAndDebits(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	wallet := f.openWallet(t, 1, money(t, "100.00", "BRL"))
+	if _, err := f.applyBet(ctx, t, 2, wallet.ID(), money(t, "30.00", "BRL")); err != nil {
+		t.Fatalf("bet: %v", err)
+	}
+
+	if _, err := f.applyBet(ctx, t, 3, wallet.ID(), money(t, "20.00", "BRL")); err != nil {
+		t.Fatalf("bet: %v", err)
+	}
+
+	// The fixture opens wallets without an opening entry, so the ledger holds only the two debits.
+	summary, err := f.ledger.Summarize(ctx, wallet.ID())
+	if err != nil || summary != (application.LedgerSummary{NetMinorUnits: -5000, Entries: 2}) {
+		t.Errorf("Summarize = %+v, %v; want -50.00 over 2 entries", summary, err)
+	}
+	empty, err := f.ledger.Summarize(ctx, id(99))
+	if err != nil || empty != (application.LedgerSummary{}) {
+		t.Errorf("Summarize of an unknown wallet = %+v, %v; want zero", empty, err)
+	}
+}
+
+func TestWithinSnapshotIsReadOnlyAndCannotNest(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	wallet := f.openWallet(t, 1, money(t, "100.00", "BRL"))
+
+	err := f.tx.WithinSnapshot(ctx, func(ctx context.Context) error {
+		locked, err := f.wallets.GetForUpdate(ctx, wallet.ID())
+		if err != nil {
+			return err
+		}
+		if _, err := locked.Debit(id(50), id(51), money(t, "1.00", "BRL"), testNow); err != nil {
+			return err
+		}
+		return f.wallets.UpdateBalance(ctx, locked)
+	})
+	if err == nil {
+		t.Error("a write inside the snapshot succeeded; it must be read-only")
+	}
+
+	err = f.tx.WithinTx(ctx, func(ctx context.Context) error {
+		return f.tx.WithinSnapshot(ctx, func(context.Context) error { return nil })
+	})
+	if err == nil {
+		t.Error("a snapshot inside a transaction would silently get the outer isolation level")
+	}
+}

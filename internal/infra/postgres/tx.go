@@ -29,11 +29,23 @@ func NewTxManager(pool *pgxpool.Pool) *TxManager {
 }
 
 func (m *TxManager) WithinTx(ctx context.Context, fn func(ctx context.Context) error) error {
-	if _, ok := ctx.Value(txContextKey{}).(pgx.Tx); ok {
+	return m.within(ctx, pgx.TxOptions{}, fn)
+}
+
+// REPEATABLE READ keeps the first query's snapshot for the whole transaction; READ COMMITTED takes one per statement.
+func (m *TxManager) WithinSnapshot(ctx context.Context, fn func(ctx context.Context) error) error {
+	if inTx(ctx) {
+		return errors.New("snapshot requested inside another transaction")
+	}
+	return m.within(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, fn)
+}
+
+func (m *TxManager) within(ctx context.Context, opts pgx.TxOptions, fn func(ctx context.Context) error) error {
+	if inTx(ctx) {
 		return fn(ctx)
 	}
 
-	tx, err := m.pool.Begin(ctx)
+	tx, err := m.pool.BeginTx(ctx, opts)
 	if err != nil {
 		return translate(err)
 	}

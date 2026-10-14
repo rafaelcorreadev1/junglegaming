@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,15 +11,18 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus"
 
 	"wagering-service/internal/application"
 	"wagering-service/internal/domain"
 	"wagering-service/internal/infra/auth"
+	"wagering-service/internal/infra/observability"
 	"wagering-service/internal/infra/postgres"
 	"wagering-service/internal/infra/system"
 	"wagering-service/internal/testdb"
@@ -38,6 +42,9 @@ type testEnv struct {
 	clock   *testClock
 	outbox  application.OutboxRepository
 	retry   application.ReferenceRetryPolicy
+	// registry and logs receive what the reconciliation reports.
+	registry *prometheus.Registry
+	logs     *syncBuffer
 }
 
 func newTestEnv(t *testing.T) *testEnv {
@@ -56,13 +63,18 @@ func newTestEnv(t *testing.T) *testEnv {
 		clock:   &testClock{},
 		outbox:  postgres.NewOutboxRepository(pool),
 		retry:   application.DefaultReferenceRetryPolicy(),
+
+		registry: observability.NewRegistry(),
+		logs:     &syncBuffer{},
 	}
 	outbox := env.outbox
+	reporter := observability.NewReconciliationReporter(env.registry, slog.New(slog.NewJSONHandler(env.logs, nil)))
 
 	walletHandler := NewWalletHandler(
 		application.NewOpenWallet(env.tx, env.wallets, env.wagers, env.ledger, outbox, env.clock, env.ids),
 		application.NewGetWallet(env.wallets),
 		application.NewListLedger(env.wallets, env.ledger),
+		application.NewReconcileWallet(env.tx, env.wallets, env.ledger, reporter),
 		logger,
 	)
 	wageringHandler := NewWageringHandler(
@@ -70,8 +82,25 @@ func newTestEnv(t *testing.T) *testEnv {
 		application.NewGetWagerTransaction(env.wagers),
 		logger,
 	)
-	env.router = NewRouter(NewHealthHandler(pool, logger), walletHandler, wageringHandler, fakeVerifier{}, env.ids, logger)
+	env.router = NewRouter(NewHealthHandler(pool, logger), walletHandler, wageringHandler, fakeVerifier{}, env.ids, env.registry, logger)
 	return env
+}
+
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 // testClock is the real clock plus an offset, so a test can jump over a backoff without sleeping.

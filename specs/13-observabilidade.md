@@ -15,6 +15,8 @@ Conseguir diagnosticar uma operação pelos logs e pelas métricas.
 
 ## Métricas (`GET /metrics`, Prometheus)
 
+O endpoint e o registro próprio já existem desde a spec 12 (`internal/infra/observability/metrics.go`).
+
 | Métrica | Tipo |
 | --- | --- |
 | Transações por `kind` e `status` | Contador |
@@ -24,7 +26,7 @@ Conseguir diagnosticar uma operação pelos logs e pelas métricas.
 | Conflitos de concorrência | Contador |
 | Atraso da outbox (idade do pendente mais antigo) | Gauge |
 | Latência de processamento | Histograma |
-| Divergências de reconciliação | Contador |
+| Divergências de reconciliação | Contador (já entregue na spec 12: `wagering_reconciliations_total{result}`) |
 
 ## Health checks (públicos)
 
