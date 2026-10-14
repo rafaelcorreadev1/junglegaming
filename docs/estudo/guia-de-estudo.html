@@ -171,7 +171,7 @@
   <p class="sub">O que foi construído em cada spec, por que foi feito assim e quais conceitos de Go aparecem, para quem vem de C#, Python e TypeScript.</p>
   <div class="meta">
     Repositório: github.com/rafaelcorreadev1/junglegaming<br>
-    Atualizado até a spec 12 · 13/10/2026
+    Atualizado até a spec 13 · 13/10/2026
   </div>
 </section>
 
@@ -205,7 +205,7 @@
       <tr><td>10</td><td>Outbox e eventos</td><td class="status done">Concluída</td></tr>
       <tr><td>11</td><td>Consumidor SQS, inbox e DLQ</td><td class="status done">Concluída</td></tr>
       <tr><td>12</td><td>Reconciliação</td><td class="status done">Concluída</td></tr>
-      <tr><td>13</td><td>Observabilidade</td><td class="status todo">A fazer</td></tr>
+      <tr><td>13</td><td>Observabilidade</td><td class="status done">Concluída</td></tr>
       <tr><td>14</td><td>Ciclo de vida Fx e shutdown</td><td class="status todo">A fazer</td></tr>
       <tr><td>15</td><td>Testes de integração, concorrência e recuperação</td><td class="status todo">A fazer</td></tr>
       <tr><td>16</td><td>Documentação e entrega</td><td class="status todo">A fazer</td></tr>
@@ -2844,6 +2844,137 @@ RETURNING ...</code></pre>
     <li><code>internal/infra/postgres/ledger_repository.go</code>: <code>Summarize</code></li>
     <li><code>internal/infra/observability/metrics.go</code></li>
     <li><code>internal/infra/httpapi/reconciliation_test.go</code></li>
+  </ol>
+</section>
+
+<!-- ============================ SPEC 13 ============================ -->
+<section class="chapter">
+  <div class="chapter-label">Spec 13</div>
+  <h1>Observabilidade</h1>
+  <p class="lead">Quando algo dá errado em produção, só restam os logs e as métricas. Esta spec faz cada log carregar os identificadores da operação sem que ninguém precise lembrar de passá-los, mede o que o desafio pede e faz o readiness dizer qual dependência caiu.</p>
+
+  <h2>1. O que a spec pedia</h2>
+  <ul>
+    <li>Logs JSON com <code>correlationId</code>, <code>messageId</code>, <code>transactionId</code>, <code>walletId</code>, <code>providerId</code>; nada de token ou corpo da operação.</li>
+    <li>Métricas: transações por tipo e status, duplicatas, retries, DLQ, conflitos, atraso da outbox, latência, reconciliação.</li>
+    <li><code>/health/live</code> e <code>/health/ready</code> (Postgres e SQS).</li>
+  </ul>
+
+  <h2>2. Campos de log que viajam no <code>context</code></h2>
+  <p>O jeito ingênuo é passar <code>"correlationId", id</code> em cada chamada de log. Alguém sempre esquece. A alternativa é guardar os campos no <code>context.Context</code> da requisição e deixar o <em>handler</em> do <code>slog</code> acrescentá-los sozinho.</p>
+<pre><code>func (h *ContextHandler) Handle(ctx context.Context, record slog.Record) error {
+    if f, ok := ctx.Value(fieldsKey{}).(*fields); ok {
+        record = record.Clone()
+        record.AddAttrs(f.snapshot()...)
+    }
+    return h.next.Handle(ctx, record)
+}</code></pre>
+  <ul>
+    <li><code>slog.Handler</code> é a interface que decide o que fazer com cada registro. <code>ContextHandler</code> envolve o handler JSON (padrão <em>decorator</em>): acrescenta os campos e repassa.</li>
+    <li>Por isso todo log precisa usar as variantes com contexto: <code>logger.InfoContext(ctx, ...)</code>.</li>
+    <li><code>WithFields(ctx, ...)</code> cria o conjunto; <code>AddFields(ctx, ...)</code> acrescenta a ele.</li>
+  </ul>
+  <h3>Por que um ponteiro mutável?</h3>
+  <p>Contextos em Go são imutáveis: <code>context.WithValue</code> cria um filho, e o pai não vê o que o filho ganhou. O access log é escrito pelo middleware de fora, <em>depois</em> que o handler terminou, mas é o handler que descobre o <code>transactionId</code>. Guardando no contexto um ponteiro para o conjunto de campos, o handler acrescenta e o middleware enxerga. Um <code>sync.Mutex</code> protege o conjunto, porque o <code>context</code> pode ser usado por várias goroutines.</p>
+
+  <h2>3. O access log</h2>
+  <p>Uma linha por requisição, escrita pelo middleware <code>observeRequests</code>:</p>
+<pre><code>{"level":"INFO","msg":"http request","method":"POST","route":"/wagering/transactions","status":200,
+ "durationMs":15,"correlationId":"trace-1791996601","clientId":"provider-a","providerId":"provider-a",
+ "walletId":"01a13b52-...","transactionId":"01a13b52-..."}</code></pre>
+  <ul>
+    <li>Para saber o status, o middleware troca o <code>http.ResponseWriter</code> por um que guarda o código passado em <code>WriteHeader</code>. Isso é <strong>embedding</strong>: a struct embute a interface original e sobrescreve só um método.</li>
+    <li>Nenhum header e nenhum corpo vão para o log. O teste procura o token, a palavra <code>Bearer</code>, o <code>gameId</code> e o valor da aposta. Registrando os headers de propósito, o teste falhou; com o código certo, passa.</li>
+  </ul>
+
+  <h2>4. Métricas</h2>
+  <table>
+    <thead><tr><th>Métrica</th><th>Tipo</th><th>Rótulos</th></tr></thead>
+    <tbody>
+      <tr><td><code>wagering_transactions_total</code></td><td>Contador</td><td><code>channel</code>, <code>kind</code>, <code>status</code></td></tr>
+      <tr><td><code>wagering_duplicates_total</code></td><td>Contador</td><td><code>channel</code>, <code>kind</code> (replay ou inbox)</td></tr>
+      <tr><td><code>wagering_retries_total</code></td><td>Contador</td><td><code>component</code></td></tr>
+      <tr><td><code>wagering_dlq_messages_total</code></td><td>Contador</td><td><code>reason</code></td></tr>
+      <tr><td><code>wagering_concurrency_conflicts_total</code></td><td>Contador</td><td><code>reason</code></td></tr>
+      <tr><td><code>wagering_outbox_oldest_pending_age_seconds</code></td><td>Gauge</td><td>—</td></tr>
+      <tr><td><code>wagering_processing_duration_seconds</code></td><td>Histograma</td><td><code>channel</code></td></tr>
+      <tr><td><code>wagering_http_requests_total</code> / <code>_duration_seconds</code></td><td>Contador / Histograma</td><td><code>method</code>, <code>route</code>, <code>status</code></td></tr>
+    </tbody>
+  </table>
+  <ul>
+    <li><strong>Gauge</strong> é um valor que sobe e desce. <strong>Histograma</strong> conta observações em faixas (<em>buckets</em>), o que permite calcular percentis como o p99 de latência.</li>
+    <li><strong>Cardinalidade:</strong> cada combinação de rótulos é uma série guardada pelo Prometheus. Rotular pelo caminho (<code>/wallets/0192...</code>) criaria uma série por carteira. Por isso o rótulo é o padrão da rota do chi, <code>/wallets/{walletId}</code>. O teste confere que nenhum id aparece em <code>/metrics</code>.</li>
+    <li>Replay não conta como transação nova: entra em <code>duplicates_total</code>. Assim <code>transactions_total</code> reflete decisões de verdade.</li>
+  </ul>
+
+  <h3>Medir sem a aplicação saber: <code>fx.Decorate</code></h3>
+  <p>Conflitos de concorrência acontecem dentro das transações. Em vez de espalhar contadores pelos casos de uso, um decorador envolve o <code>TxManager</code>:</p>
+<pre><code>func (t *instrumentedTxManager) WithinTx(ctx context.Context, fn func(ctx context.Context) error) error {
+    err := t.next.WithinTx(ctx, fn)
+    if reason, ok := conflictReason(err); ok {
+        t.metrics.Conflict(reason)
+    }
+    return err
+}</code></pre>
+  <p><code>fx.Decorate(observability.InstrumentTxManager, observability.InstrumentPublisher)</code> troca a implementação para todo mundo que pede um <code>TxManager</code> ou um <code>EventPublisher</code>. Os casos de uso não mudaram. Um detalhe que pega: <code>fx.Decorate</code> dentro de um <code>fx.Module</code> só vale para aquele módulo; por isso fica na raiz.</p>
+  <p>Para separar "o banco caiu" de "perdi uma disputa", deadlock e falha de serialização ganharam um erro próprio, <code>ErrTransactionConflict</code>, embrulhado junto com <code>ErrUnavailable</code>: <code>fmt.Errorf("%w: %w: %w", ErrUnavailable, ErrTransactionConflict, pgErr)</code>. <code>errors.Is</code> encontra qualquer um dos três.</p>
+
+  <h3>Gauge calculado na hora</h3>
+  <p>O atraso da outbox é um <code>GaugeFunc</code>: a função roda a cada scrape e consulta <code>min(occurred_at)</code> dos eventos não publicados. Se a consulta falha, devolve <code>NaN</code> (sem valor), nunca um 0 que pareceria "tudo em dia".</p>
+
+  <h2>5. Readiness com value groups</h2>
+  <p>Cada dependência implementa uma interface pequena:</p>
+<pre><code>type ReadinessProbe interface {
+    Name() string
+    Ping(ctx context.Context) error
+}</code></pre>
+  <p>No Fx, um <strong>value group</strong> junta vários providers do mesmo tipo numa lista. Postgres e SQS se registram com <code>fx.ResultTags(`group:"readiness"`)</code>, e o <code>HealthHandler</code> recebe <code>[]ReadinessProbe</code> com <code>fx.ParamTags(`group:"readiness"`)</code>. Acrescentar uma dependência é só mais um provider no grupo.</p>
+  <ul>
+    <li>As sondas rodam em paralelo, com 2s no total; qualquer uma fora dá <code>503</code> com o estado de cada uma.</li>
+    <li>A do SQS consulta as três filas: não basta o LocalStack responder, as filas precisam existir.</li>
+    <li><code>/health/live</code> não consulta nada. Se o liveness dependesse do banco, o orquestrador reiniciaria o processo toda vez que o banco caísse, e isso não resolveria nada.</li>
+  </ul>
+
+  <h2>6. Como foi testado</h2>
+  <table>
+    <thead><tr><th>Cenário</th><th>Resultado verificado</th></tr></thead>
+    <tbody>
+      <tr><td>Aposta com <code>X-Correlation-Id: trace-123</code></td><td>Access log com correlation, provedor, carteira, transação e rota; os dois eventos gravados com <code>trace-123</code></td></tr>
+      <tr><td>Token inválido, aposta válida, aposta inválida</td><td>Nem token, nem <code>Bearer</code>, nem <code>gameId</code>, nem valor nos logs</td></tr>
+      <tr><td>Aposta, replay, rejeição, leitura de carteira</td><td>Contadores exatos; rota como padrão; nenhum id em <code>/metrics</code></td></tr>
+      <tr><td>Erros de disputa, deadlock e outros no decorador</td><td>Conflitos contados por motivo; outros erros ignorados</td></tr>
+      <tr><td>Consumidor: JSON inválido, falha transitória, já tratada</td><td>DLQ, retry e duplicata contados</td></tr>
+      <tr><td>Readiness com sonda falhando</td><td><code>503</code> com o estado de cada uma; live <code>200</code></td></tr>
+    </tbody>
+  </table>
+  <ul>
+    <li>Ponta a ponta no Compose: a mesma aposta por HTTP e por SQS, rastreada nos logs pelo <code>correlationId</code> e pelo <code>messageId</code>; os eventos na fila <code>wager-events.fifo</code> com o mesmo <code>correlationId</code>; com o PostgreSQL parado, <code>/health/ready</code> deu <code>503</code> (<code>postgres: down</code>, <code>sqs: up</code>) e <code>/health/live</code> deu <code>200</code>.</li>
+    <li><code>go test -race</code> passa no container; cobertura de <code>internal/</code> em 90,6%.</li>
+  </ul>
+
+  <h2>7. Para fixar</h2>
+  <dl class="qa">
+    <dt>Por que guardar os campos de log no <code>context</code>?</dt>
+    <dd>Para que todo log de uma operação traga os identificadores sem cada chamada precisar repeti-los.</dd>
+
+    <dt>Por que o rótulo da métrica é <code>/wallets/{walletId}</code> e não o caminho?</dt>
+    <dd>Cada valor de rótulo vira uma série; ids criariam uma série por carteira e derrubariam o Prometheus.</dd>
+
+    <dt>O que <code>fx.Decorate</code> resolve aqui?</dt>
+    <dd>Medir conflitos e falhas de publicação sem mexer nos casos de uso: a infraestrutura troca a implementação por uma que mede.</dd>
+
+    <dt>Por que o liveness não olha o banco?</dt>
+    <dd>Liveness diz se o processo precisa ser reiniciado. Reiniciar não conserta um banco fora; isso é papel do readiness.</dd>
+  </dl>
+
+  <h3>Ordem de leitura do código</h3>
+  <ol>
+    <li><code>internal/infra/observability/logger.go</code></li>
+    <li><code>internal/infra/httpapi/middleware.go</code></li>
+    <li><code>internal/infra/observability/metrics.go</code> e <code>instrument.go</code></li>
+    <li><code>internal/app/app.go</code>: <code>fx.Decorate</code> e o value group</li>
+    <li><code>internal/infra/httpapi/health.go</code></li>
+    <li><code>internal/infra/httpapi/observability_test.go</code></li>
   </ol>
 </section>
 
