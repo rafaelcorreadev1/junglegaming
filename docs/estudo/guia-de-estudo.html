@@ -171,7 +171,7 @@
   <p class="sub">O que foi construído em cada spec, por que foi feito assim e quais conceitos de Go aparecem, para quem vem de C#, Python e TypeScript.</p>
   <div class="meta">
     Repositório: github.com/rafaelcorreadev1/junglegaming<br>
-    Atualizado até a spec 09 · 13/10/2026
+    Atualizado até a spec 10 · 13/10/2026
   </div>
 </section>
 
@@ -202,7 +202,7 @@
       <tr><td>07</td><td>Operação: BET / WIN / LOSS e idempotência</td><td class="status done">Concluída</td></tr>
       <tr><td>08</td><td>Reversões e referências pendentes</td><td class="status done">Concluída</td></tr>
       <tr><td>09</td><td>Autenticação e autorização</td><td class="status done">Concluída</td></tr>
-      <tr><td>10</td><td>Outbox e eventos</td><td class="status todo">A fazer</td></tr>
+      <tr><td>10</td><td>Outbox e eventos</td><td class="status done">Concluída</td></tr>
       <tr><td>11</td><td>Consumidor SQS, inbox e DLQ</td><td class="status todo">A fazer</td></tr>
       <tr><td>12</td><td>Reconciliação</td><td class="status todo">A fazer</td></tr>
       <tr><td>13</td><td>Observabilidade</td><td class="status todo">A fazer</td></tr>
@@ -2004,7 +2004,7 @@ close(results)</code></pre>
       <tr><td><code>domain/wager_transaction.go</code></td><td><code>ScheduleReferenceAttempt</code> e os campos da espera</td></tr>
       <tr><td><code>application/resolve_pending_references.go</code></td><td><code>ReferenceRetryPolicy</code> e o caso de uso <code>ResolvePendingReferences</code></td></tr>
       <tr><td><code>infra/postgres/wager_transaction_repository.go</code></td><td><code>ClaimPendingReferences</code> e <code>WakePendingReferences</code></td></tr>
-      <tr><td><code>infra/worker/reference_resolver.go</code></td><td>A goroutine que chama o caso de uso a cada intervalo</td></tr>
+      <tr><td><code>infra/worker/</code></td><td>A goroutine que chama o caso de uso a cada intervalo (na spec 10 virou o <code>Poller</code> genérico de <code>poller.go</code>)</td></tr>
     </tbody>
   </table>
   <p>As regras de reversão (quem pode reverter o quê, valor igual, uma reversão por transação) continuam em <code>ApplyWager</code>, da spec 03. O worker chama a mesma função que o endpoint HTTP chama.</p>
@@ -2183,7 +2183,7 @@ lc.Append(fx.Hook{
     <li><code>migrations/000005_add_reference_retry.up.sql</code></li>
     <li><code>internal/application/resolve_pending_references.go</code>: a política, depois <code>Execute</code> e <code>resolve</code></li>
     <li><code>internal/infra/postgres/wager_transaction_repository.go</code>: <code>ClaimPendingReferences</code> e <code>WakePendingReferences</code></li>
-    <li><code>internal/infra/worker/reference_resolver.go</code></li>
+    <li><code>internal/infra/worker/poller.go</code> e <code>module.go</code></li>
     <li><code>internal/infra/httpapi/references_test.go</code></li>
   </ol>
 </section>
@@ -2369,6 +2369,180 @@ router.Group(func(r chi.Router) {
     <li><code>internal/infra/httpapi/auth.go</code> e o <code>NewRouter</code> em <code>server.go</code></li>
     <li><code>internal/infra/auth/verifier_test.go</code></li>
     <li><code>internal/infra/httpapi/auth_test.go</code></li>
+  </ol>
+</section>
+
+<!-- ============================ SPEC 10 ============================ -->
+<section class="chapter">
+  <div class="chapter-label">Spec 10</div>
+  <h1>Outbox e publicação de eventos</h1>
+  <p class="lead">Desde a spec 06 cada mudança de saldo grava eventos na tabela <code>outbox_events</code>, na mesma transação. Agora um worker tira esses eventos do banco e os publica numa fila SQS, sem perder nenhum e sem trocar a ordem dos eventos de uma carteira.</p>
+
+  <h2>1. O que a spec pedia</h2>
+  <ul>
+    <li>Nenhum evento sai antes do commit; nenhum evento confirmado se perde.</li>
+    <li>Vários publishers em paralelo sem publicar o mesmo evento ao mesmo tempo.</li>
+    <li>Retry com backoff; trabalho de instância morta retomado por outra.</li>
+    <li>Republicação mantém o mesmo <code>eventId</code>.</li>
+    <li>Fila <code>wager-events.fifo</code>, com <code>MessageGroupId</code> = carteira e <code>MessageDeduplicationId</code> = <code>eventId</code>.</li>
+  </ul>
+  <div class="warn"><strong>Eliminatório.</strong> Publicar um evento antes do commit.</div>
+
+  <h2>2. Por que a outbox existe</h2>
+  <p>A tentação é publicar na fila logo depois de gravar no banco. Os dois são sistemas separados, e não há transação que cubra os dois:</p>
+  <table>
+    <thead><tr><th>Ordem</th><th>Falha no meio</th><th>Resultado</th></tr></thead>
+    <tbody>
+      <tr><td>Publica, depois commita</td><td>O commit falha</td><td>Evento de um saldo que nunca mudou</td></tr>
+      <tr><td>Commita, depois publica</td><td>O processo morre antes de publicar</td><td>Saldo mudou e ninguém fica sabendo</td></tr>
+    </tbody>
+  </table>
+  <p>A <strong>transactional outbox</strong> resolve gravando o evento numa tabela do mesmo banco, na mesma transação do saldo. Ou os dois existem, ou nenhum. Publicar vira uma segunda etapa que pode ser repetida até dar certo.</p>
+  <ol class="flow">
+    <li>O caso de uso grava saldo, lançamento e evento numa transação só.</li>
+    <li>O worker lê os eventos não publicados, envia ao SQS e marca como publicados.</li>
+  </ol>
+
+  <h2>3. At-least-once</h2>
+  <p>Se o processo morrer depois de enviar e antes de marcar, o evento será enviado de novo. Não existe forma de evitar isso por completo: entre "enviei" e "anotei que enviei" sempre há um instante de risco. Por isso a garantia é <strong>pelo menos uma vez</strong> (<em>at-least-once</em>), e o consumidor precisa ser idempotente, deduplicando pelo <code>eventId</code>.</p>
+  <p>O SQS FIFO ajuda: mensagens com o mesmo <code>MessageDeduplicationId</code> em menos de 5 minutos são descartadas. Depois disso, a duplicata passa.</p>
+
+  <h2>4. O problema da ordem</h2>
+  <p>Numa fila FIFO, mensagens do mesmo <code>MessageGroupId</code> são entregues na ordem em que foram <strong>enviadas</strong>. Com o grupo sendo a carteira, quem consome vê os saldos de uma carteira na sequência certa. Mas só se nós enviarmos na sequência certa.</p>
+  <p>Com dois publishers reservando eventos soltos, o publisher A poderia pegar o evento 1 da carteira e o B o evento 2; se B for mais rápido, o 2 sai antes. Por isso a reserva é feita por carteira inteira.</p>
+
+  <h2>5. A reserva por carteira</h2>
+<pre><code>WITH heads AS (
+    SELECT o.aggregate_id FROM outbox_events o
+     WHERE o.published_at IS NULL
+       AND o.next_attempt_at &lt;= $1
+       AND (o.locked_until IS NULL OR o.locked_until &lt;= $1)
+       AND NOT EXISTS (                     -- é o mais antigo não publicado da carteira
+            SELECT 1 FROM outbox_events p
+             WHERE p.aggregate_id = o.aggregate_id
+               AND p.published_at IS NULL AND p.sequence &lt; o.sequence)
+     ORDER BY o.sequence
+     LIMIT $3
+       FOR UPDATE SKIP LOCKED
+), claimed AS (
+    SELECT id FROM (
+        SELECT e.id, row_number() OVER (PARTITION BY e.aggregate_id ORDER BY e.sequence) AS position
+          FROM outbox_events e JOIN heads h ON h.aggregate_id = e.aggregate_id
+         WHERE e.published_at IS NULL) ranked
+     WHERE position &lt;= $4
+)
+UPDATE outbox_events SET locked_until = $2      -- agora + 30s
+ WHERE id IN (SELECT id FROM claimed)
+RETURNING ...</code></pre>
+  <ul>
+    <li><code>heads</code> escolhe a <strong>cabeça</strong> de cada carteira: o evento não publicado mais antigo. Só ela é travada.</li>
+    <li>Outro publisher rodando ao mesmo tempo pula a cabeça travada (<code>SKIP LOCKED</code>) e também não pega o evento 2, porque para ele a cabeça ainda está não publicada e o <code>NOT EXISTS</code> exclui o 2.</li>
+    <li><code>claimed</code> pega os eventos não publicados dessas carteiras, até <code>$4</code> por carteira. <code>row_number() OVER (PARTITION BY ...)</code> é uma <strong>função de janela</strong>: numera as linhas dentro de cada carteira, sem agrupar.</li>
+    <li>O <code>UPDATE</code> grava a reserva de 30 segundos, a mesma ideia de <em>lease</em> da spec 08. Depois do comando, é ela que mantém os outros afastados.</li>
+    <li>CTE (<code>WITH ... AS</code>) é uma consulta com nome, usada pelas partes seguintes do mesmo comando.</li>
+  </ul>
+  <p>Uma cabeça com <code>next_attempt_at</code> no futuro (esperando backoff) segura a carteira inteira. É intencional: o evento seguinte não pode passar na frente.</p>
+
+  <h2>6. Publicar e lidar com falhas</h2>
+<pre><code>func (uc *PublishOutbox) publishInOrder(ctx context.Context, group []OutboxRecord) error {
+    for i, record := range group {
+        if err := uc.publisher.Publish(ctx, record.Message); err != nil {
+            return uc.giveBack(ctx, record, group[i+1:], err)
+        }
+        if err := uc.outbox.MarkPublished(ctx, record.Message.ID, uc.clock.Now()); err != nil {
+            return fmt.Errorf("mark event %s published: %w", record.Message.ID, err)
+        }
+    }
+    return nil
+}</code></pre>
+  <table>
+    <thead><tr><th>Situação</th><th>O que acontece</th></tr></thead>
+    <tbody>
+      <tr><td>Envio aceito</td><td><code>published_at</code> preenchido, reserva liberada</td></tr>
+      <tr><td>Envio falhou</td><td>Conta a tentativa, guarda o erro, agenda com backoff; libera os eventos seguintes da carteira sem tentar; as outras carteiras seguem</td></tr>
+      <tr><td>Enviou e não conseguiu marcar</td><td>Depois da reserva, envia de novo com o mesmo <code>eventId</code></td></tr>
+      <tr><td>Instância morreu depois de reservar</td><td>A reserva vence e outra instância assume</td></tr>
+    </tbody>
+  </table>
+  <ul>
+    <li><code>group[i+1:]</code> é um <em>slice</em> do restante: os eventos que vinham depois do que falhou.</li>
+    <li>Não há limite de tentativas. Descartar um evento confirmado é exatamente o que a outbox existe para impedir; o erro fica em <code>last_error</code> para quem for investigar.</li>
+    <li>O registro da falha usa <code>context.WithoutCancel(ctx)</code>: se o desligamento cancelar o contexto no meio, a falha ainda é anotada e a carteira não fica presa por 30 segundos.</li>
+  </ul>
+
+  <h2>7. A mensagem no SQS</h2>
+<pre><code>_, err := p.client.SendMessage(ctx, &amp;sqs.SendMessageInput{
+    QueueUrl:               aws.String(p.queueURL),
+    MessageBody:            aws.String(string(message.Payload)),
+    MessageGroupId:         aws.String(message.AggregateID),
+    MessageDeduplicationId: aws.String(message.ID),
+    MessageAttributes: map[string]types.MessageAttributeValue{
+        "eventType": {DataType: aws.String("String"), StringValue: aws.String(message.EventType)},
+        "eventId":   {DataType: aws.String("String"), StringValue: aws.String(message.ID)},
+    },
+})</code></pre>
+  <ul>
+    <li>SDK oficial <code>aws-sdk-go-v2</code>. Os campos são ponteiros (<code>*string</code>) para distinguir "vazio" de "não informado"; <code>aws.String</code> cria o ponteiro.</li>
+    <li><code>BaseEndpoint</code> aponta o cliente para o LocalStack; sem ele, o mesmo código fala com a AWS de verdade.</li>
+    <li>As credenciais vêm da cadeia padrão da AWS (variáveis <code>AWS_ACCESS_KEY_ID</code>, perfis, papéis de instância), nunca do código.</li>
+  </ul>
+
+  <h2>8. Um worker genérico</h2>
+  <p>O laço com <code>time.Ticker</code> da spec 08 foi extraído para <code>worker.Poller</code>, que recebe a tarefa como função:</p>
+<pre><code>type Job func(ctx context.Context) (more bool, err error)</code></pre>
+  <p>O resolvedor de referências e o publicador da outbox viram duas instâncias do mesmo <code>Poller</code>, cada uma na sua goroutine. Em Go uma função é um valor como outro qualquer, e passar uma função costuma substituir a interface de um método só.</p>
+
+  <h2>9. LocalStack</h2>
+  <ul>
+    <li>Emula serviços da AWS localmente. No Compose sobe só o SQS, na porta <code>4566</code>.</li>
+    <li><code>deploy/localstack/init-queues.sh</code> roda quando o LocalStack fica pronto e cria <code>wager-events.fifo</code>.</li>
+    <li>O healthcheck só fica verde depois que a fila existe; a aplicação espera por isso.</li>
+    <li>O LocalStack não guarda as filas entre reinícios: parar o container apaga as mensagens.</li>
+  </ul>
+
+  <h2>10. Como foi testado</h2>
+  <table>
+    <thead><tr><th>Cenário</th><th>Resultado verificado</th></tr></thead>
+    <tbody>
+      <tr><td>Duas carteiras, 14 eventos</td><td>Todos enviados uma vez, na ordem de criação de cada carteira; payload enviado igual ao gravado</td></tr>
+      <tr><td>Segundo evento de uma carteira falha</td><td>O terceiro não sai antes dele; a outra carteira sai inteira; tentativa 1, erro gravado, nova tentativa em 1s</td></tr>
+      <tr><td>Publisher morre depois de reservar</td><td>Nada sai durante a reserva; depois dela, tudo sai</td></tr>
+      <tr><td>Enviou e perdeu a marcação</td><td>O evento sai de novo com o mesmo ID, depois o resto</td></tr>
+      <tr><td>4 publishers, 5 carteiras, 90 eventos, lotes pequenos</td><td>90 envios, nenhum duplicado, cada carteira em ordem</td></tr>
+      <tr><td>Publisher contra o LocalStack</td><td>Grupo e deduplicação corretos; reenvio do mesmo <code>eventId</code> descartado</td></tr>
+    </tbody>
+  </table>
+  <ul>
+    <li>Removi de propósito o <code>NOT EXISTS</code> e depois o <code>SKIP LOCKED</code>: os testes de ordem e de concorrência falharam nos dois casos, e voltei o código.</li>
+    <li>Ponta a ponta no Compose: carteira com três apostas gerou oito mensagens na fila, na ordem e com <code>walletVersion</code> 1, 2, 3, 4. Com o LocalStack parado, uma aposta foi aceita, o evento ficou com <code>attempts = 1</code> e o erro gravado; ao voltar, foi publicado.</li>
+    <li><code>go test -race</code> passa, inclusive o teste contra o LocalStack; cobertura de <code>internal/</code> em 88,9%.</li>
+  </ul>
+
+  <h2>11. Para fixar</h2>
+  <dl class="qa">
+    <dt>Por que não publicar direto depois do commit?</dt>
+    <dd>Se o processo morrer entre os dois, o evento se perde. Na outbox ele fica no banco até ser publicado.</dd>
+
+    <dt>O que significa at-least-once e quem paga por ele?</dt>
+    <dd>O evento pode chegar mais de uma vez. O consumidor paga, deduplicando pelo <code>eventId</code>.</dd>
+
+    <dt>Por que travar só a cabeça de cada carteira?</dt>
+    <dd>Para que outro publisher não pegue um evento posterior e o envie antes do anterior.</dd>
+
+    <dt>A deduplicação do SQS FIFO dispensa a do consumidor?</dt>
+    <dd>Não. Ela vale por 5 minutos; um reenvio depois disso passa.</dd>
+
+    <dt>Por que o evento que falha não tem limite de tentativas?</dt>
+    <dd>Porque ele descreve algo que já aconteceu no banco. Descartá-lo seria perder a informação que a outbox protege.</dd>
+  </dl>
+
+  <h3>Ordem de leitura do código</h3>
+  <ol>
+    <li><code>internal/infra/postgres/outbox_repository.go</code>: <code>ClaimDue</code></li>
+    <li><code>internal/application/publish_outbox.go</code></li>
+    <li><code>internal/infra/sqs/publisher.go</code> e <code>deploy/localstack/init-queues.sh</code></li>
+    <li><code>internal/infra/worker/poller.go</code> e <code>module.go</code></li>
+    <li><code>internal/application/publish_outbox_test.go</code></li>
   </ol>
 </section>
 
