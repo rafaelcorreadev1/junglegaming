@@ -16,7 +16,7 @@ Precisa só de Docker, Go 1.27, `curl` e um shell POSIX (Linux, macOS, WSL ou Gi
 git clone https://github.com/rafaelcorreadev1/junglegaming.git
 cd junglegaming
 docker compose --profile multi up -d --build --wait
-curl -s http://localhost:8080/health/ready   # {"status":"up",...}
+curl -s http://localhost:8080/health/ready   # {"checks":{"postgres":"up","sqs":"up"},"status":"ok"}
 ```
 
 **2. Fluxo autenticado de ponta a ponta.** Cole o bloco inteiro no mesmo terminal:
@@ -54,7 +54,7 @@ bet "$PLAYER-a" 80.00 & bet "$PLAYER-b" 80.00 & wait
 echo "--- repetir a primeira: idempotentReplay=true, saldo original"
 bet "$PLAYER-a" 80.00
 
-echo "--- provider-b não enxerga a transação do provider-a: 403"
+echo "--- provider-b não enxerga a transação do provider-a: 404, igual a uma inexistente"
 curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $PROVIDER_B" \
   $API/providers/provider-a/wagering/transactions/$PLAYER-a
 
@@ -325,7 +325,7 @@ docker run --rm --network junglegaming_default \
   go test -race -tags=integration ./...
 ```
 
-A rede se chama `<pasta>_default`; troque `junglegaming` se o checkout estiver em outra pasta. No Git Bash, prefixe com `MSYS_NO_PATHCONV=1`.
+A rede se chama `<pasta>_default`; troque `junglegaming` se o checkout estiver em outra pasta. No Git Bash, prefixe com `MSYS_NO_PATHCONV=1` e, se o checkout estiver dentro da pasta temporária (que o Git Bash mostra como `/tmp`), troque `$PWD` por `$(pwd -W)`.
 
 ### Preparar as dependências dos testes
 
