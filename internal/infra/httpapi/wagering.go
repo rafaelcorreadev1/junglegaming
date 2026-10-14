@@ -10,6 +10,7 @@ import (
 
 	"wagering-service/internal/application"
 	"wagering-service/internal/domain"
+	"wagering-service/internal/infra/auth"
 )
 
 const idempotencyKeyHeader = "Idempotency-Key"
@@ -99,6 +100,11 @@ func (h *WageringHandler) Process(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, h.logger, invalidRequest("money", "money is required"))
 		return
 	}
+	// The token, not the body, says who is calling; this also keeps idempotency keys from crossing providers.
+	if principal, _ := auth.PrincipalFrom(r.Context()); request.ProviderID != principal.ProviderID {
+		writeError(w, r, h.logger, errForbidden)
+		return
+	}
 
 	result, err := h.process.Execute(r.Context(), application.ProcessWagerInput{
 		ProviderID:                     request.ProviderID,
@@ -135,6 +141,9 @@ func (h *WageringHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tx, err := h.get.ByID(r.Context(), transactionID)
+	if err == nil {
+		err = visibleTo(r, tx.ProviderID())
+	}
 	if err != nil {
 		writeError(w, r, h.logger, err)
 		return
@@ -143,7 +152,13 @@ func (h *WageringHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *WageringHandler) GetByExternalID(w http.ResponseWriter, r *http.Request) {
-	tx, err := h.get.ByExternalID(r.Context(), chi.URLParam(r, "providerId"), chi.URLParam(r, "externalTransactionId"))
+	providerID := chi.URLParam(r, "providerId")
+	// Checked before the lookup so another provider's ids are never even queried.
+	if err := visibleTo(r, providerID); err != nil {
+		writeError(w, r, h.logger, err)
+		return
+	}
+	tx, err := h.get.ByExternalID(r.Context(), providerID, chi.URLParam(r, "externalTransactionId"))
 	if err != nil {
 		writeError(w, r, h.logger, err)
 		return

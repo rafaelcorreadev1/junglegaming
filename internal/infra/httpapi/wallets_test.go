@@ -18,6 +18,7 @@ import (
 
 	"wagering-service/internal/application"
 	"wagering-service/internal/domain"
+	"wagering-service/internal/infra/auth"
 	"wagering-service/internal/infra/postgres"
 	"wagering-service/internal/infra/system"
 	"wagering-service/internal/testdb"
@@ -69,7 +70,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		application.NewGetWagerTransaction(env.wagers),
 		logger,
 	)
-	env.router = NewRouter(NewHealthHandler(pool, logger), walletHandler, wageringHandler, env.ids, logger)
+	env.router = NewRouter(NewHealthHandler(pool, logger), walletHandler, wageringHandler, fakeVerifier{}, env.ids, logger)
 	return env
 }
 
@@ -80,9 +81,35 @@ func (c *testClock) Now() time.Time { return system.Clock{}.Now().Add(time.Durat
 
 func (c *testClock) advance(d time.Duration) { c.offset.Add(int64(d)) }
 
+// fakeVerifier accepts "internal" and any provider id as tokens; the real JWT checks are tested in package auth.
+type fakeVerifier struct{}
+
+func (fakeVerifier) Verify(_ context.Context, raw string) (auth.Principal, error) {
+	switch {
+	case raw == "internal":
+		return auth.Principal{ClientID: "wallet-service", Roles: []auth.Role{auth.RoleInternal}}, nil
+	case strings.HasPrefix(raw, "provider-"):
+		return auth.Principal{ClientID: raw, ProviderID: raw, Roles: []auth.Role{auth.RoleProvider}}, nil
+	}
+	return auth.Principal{}, auth.ErrInvalidToken
+}
+
+// do authenticates as the internal service on wallet routes and as provider-a elsewhere.
 func (e *testEnv) do(method, path, body string) *httptest.ResponseRecorder {
 	e.t.Helper()
+	token := "provider-a"
+	if strings.HasPrefix(path, "/wallets") {
+		token = "internal"
+	}
+	return e.doAs(token, method, path, body)
+}
+
+func (e *testEnv) doAs(token, method, path, body string) *httptest.ResponseRecorder {
+	e.t.Helper()
 	request := httptest.NewRequest(method, path, strings.NewReader(body))
+	if token != "" {
+		request.Header.Set("Authorization", "Bearer "+token)
+	}
 	recorder := httptest.NewRecorder()
 	e.router.ServeHTTP(recorder, request)
 	return recorder
@@ -176,6 +203,7 @@ func TestOpenWalletWithPositiveBalanceRecordsTheOpeningCredit(t *testing.T) {
 
 	request := httptest.NewRequest(http.MethodPost, "/wallets", strings.NewReader(openBody(playerID, "1000.00", "BRL")))
 	request.Header.Set(correlationIDHeader, "corr-from-client")
+	request.Header.Set("Authorization", "Bearer internal")
 	response := httptest.NewRecorder()
 	env.router.ServeHTTP(response, request)
 

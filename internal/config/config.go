@@ -19,6 +19,10 @@ type Config struct {
 	ReferenceRetryBaseDelay time.Duration
 	ReferenceRetryMaxDelay  time.Duration
 	ReferenceMaxAttempts    int
+
+	AuthIssuer   string
+	AuthJWKSURL  string
+	AuthAudience string
 }
 
 func Load() (Config, error) {
@@ -30,12 +34,23 @@ func FromEnv(getenv func(string) string) (Config, error) {
 		HTTPAddr:    valueOr(getenv("HTTP_ADDR"), ":8080"),
 		DatabaseURL: getenv("DATABASE_URL"),
 		LogLevel:    slog.LevelInfo,
+
+		AuthIssuer:   getenv("AUTH_ISSUER"),
+		AuthJWKSURL:  getenv("AUTH_JWKS_URL"),
+		AuthAudience: valueOr(getenv("AUTH_AUDIENCE"), "wagering-service"),
 	}
 
 	var errs []error
 
-	if cfg.DatabaseURL == "" {
-		errs = append(errs, errors.New("DATABASE_URL is required"))
+	required := []struct{ name, value string }{
+		{"DATABASE_URL", cfg.DatabaseURL},
+		{"AUTH_ISSUER", cfg.AuthIssuer},
+		{"AUTH_JWKS_URL", cfg.AuthJWKSURL},
+	}
+	for _, r := range required {
+		if r.value == "" {
+			errs = append(errs, fmt.Errorf("%s is required", r.name))
+		}
 	}
 
 	if raw := getenv("LOG_LEVEL"); raw != "" {

@@ -14,6 +14,7 @@ import (
 
 	"wagering-service/internal/application"
 	"wagering-service/internal/config"
+	"wagering-service/internal/infra/auth"
 )
 
 var Module = fx.Module("httpapi",
@@ -21,6 +22,7 @@ var Module = fx.Module("httpapi",
 		NewHealthHandler,
 		NewWalletHandler,
 		NewWageringHandler,
+		fx.Annotate(newVerifier, fx.As(new(TokenVerifier))),
 		NewRouter,
 		NewServer,
 	),
@@ -28,20 +30,38 @@ var Module = fx.Module("httpapi",
 	fx.Invoke(func(*http.Server) {}),
 )
 
-func NewRouter(health *HealthHandler, wallets *WalletHandler, wagering *WageringHandler, ids application.IDGenerator, logger *slog.Logger) http.Handler {
+func NewRouter(
+	health *HealthHandler,
+	wallets *WalletHandler,
+	wagering *WageringHandler,
+	verifier TokenVerifier,
+	ids application.IDGenerator,
+	logger *slog.Logger,
+) http.Handler {
 	router := chi.NewRouter()
 	router.Use(correlationID(ids), recoverPanic(logger))
 
 	router.Get("/health/live", health.Live)
 	router.Get("/health/ready", health.Ready)
 
-	router.Post("/wallets", wallets.Open)
-	router.Get("/wallets/{walletId}", wallets.Get)
-	router.Get("/wallets/{walletId}/ledger", wallets.Ledger)
+	router.Group(func(r chi.Router) {
+		r.Use(authenticate(verifier, logger))
 
-	router.Post("/wagering/transactions", wagering.Process)
-	router.Get("/wagering/transactions/{transactionId}", wagering.GetByID)
-	router.Get("/providers/{providerId}/wagering/transactions/{externalTransactionId}", wagering.GetByExternalID)
+		r.Group(func(r chi.Router) {
+			r.Use(requireRole(logger, auth.RoleInternal))
+			r.Post("/wallets", wallets.Open)
+			r.Get("/wallets/{walletId}", wallets.Get)
+			r.Get("/wallets/{walletId}/ledger", wallets.Ledger)
+		})
+
+		r.With(requireRole(logger, auth.RoleProvider)).Post("/wagering/transactions", wagering.Process)
+
+		r.Group(func(r chi.Router) {
+			r.Use(requireRole(logger, auth.RoleProvider, auth.RoleInternal))
+			r.Get("/wagering/transactions/{transactionId}", wagering.GetByID)
+			r.Get("/providers/{providerId}/wagering/transactions/{externalTransactionId}", wagering.GetByExternalID)
+		})
+	})
 	return router
 }
 
@@ -75,4 +95,8 @@ func NewServer(lc fx.Lifecycle, cfg config.Config, handler http.Handler, logger 
 	})
 
 	return server
+}
+
+func newVerifier(cfg config.Config) (*auth.Verifier, error) {
+	return auth.NewVerifier(auth.Config{Issuer: cfg.AuthIssuer, JWKSURL: cfg.AuthJWKSURL, Audience: cfg.AuthAudience})
 }

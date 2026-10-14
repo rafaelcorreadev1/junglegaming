@@ -27,6 +27,28 @@ services:
       postgres:
         condition: service_healthy
 
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.4
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN:-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
+      # Fixes the token issuer to the URL callers on the host use, even when the app fetches keys through the Docker network.
+      KC_HOSTNAME: http://localhost:${KEYCLOAK_PORT:-8081}
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+      KC_HEALTH_ENABLED: "true"
+    ports:
+      - "${KEYCLOAK_PORT:-8081}:8080"
+    volumes:
+      - ./deploy/keycloak:/opt/keycloak/data/import:ro
+    healthcheck:
+      # The image has no curl; bash /dev/tcp is enough to ask the management port for readiness.
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 && grep -q '\"UP\"' <&3"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+      start_period: 20s
+
   app:
     build: .
     environment:
@@ -38,6 +60,9 @@ services:
       REFERENCE_RETRY_BASE_DELAY: ${REFERENCE_RETRY_BASE_DELAY:-1s}
       REFERENCE_RETRY_MAX_DELAY: ${REFERENCE_RETRY_MAX_DELAY:-1m}
       REFERENCE_MAX_ATTEMPTS: ${REFERENCE_MAX_ATTEMPTS:-10}
+      AUTH_ISSUER: http://localhost:${KEYCLOAK_PORT:-8081}/realms/wagering
+      AUTH_JWKS_URL: http://keycloak:8080/realms/wagering/protocol/openid-connect/certs
+      AUTH_AUDIENCE: wagering-service
     ports:
       - "${APP_PORT:-8080}:8080"
     depends_on:
@@ -45,6 +70,8 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+      keycloak:
+        condition: service_healthy
     stop_grace_period: 30s
 
 volumes:

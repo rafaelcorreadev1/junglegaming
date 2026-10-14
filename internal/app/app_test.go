@@ -19,6 +19,10 @@ func TestOptionsBuildAValidDependencyGraph(t *testing.T) {
 		ReferenceRetryBaseDelay: time.Second,
 		ReferenceRetryMaxDelay:  time.Minute,
 		ReferenceMaxAttempts:    10,
+
+		AuthIssuer:   "http://127.0.0.1:8081/realms/wagering",
+		AuthJWKSURL:  "http://127.0.0.1:8081/realms/wagering/protocol/openid-connect/certs",
+		AuthAudience: "wagering-service",
 	}
 
 	if err := fx.ValidateApp(Options(cfg)); err != nil {

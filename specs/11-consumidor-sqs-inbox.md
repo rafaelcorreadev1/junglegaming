@@ -42,7 +42,7 @@ Receber `WagerTransactionRequested` pela fila com as mesmas garantias do HTTP, t
 
 - `internal/infra/sqs/consumer.go`
 - `internal/application/handle_wager_message.go` (inbox + caso de uso na mesma transação)
-- `deploy/localstack/init-queues.sh`
+- `deploy/localstack/init-queues.sh`, incluindo a política de acesso às filas (veio da spec 09)
 
 ## Critérios de aceite
 

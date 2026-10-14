@@ -42,6 +42,11 @@ func (e *testEnv) send(key string, w wager) *httptest.ResponseRecorder {
 	if key != "" {
 		request.Header.Set(idempotencyKeyHeader, key)
 	}
+	token := w.ProviderID
+	if token == "" {
+		token = "provider-a"
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
 	recorder := httptest.NewRecorder()
 	e.router.ServeHTTP(recorder, request)
 	return recorder
@@ -374,7 +379,7 @@ func TestWagerRequestValidation(t *testing.T) {
 		{"internal kind", "k", func(w *wager) { w.Kind = "OPENING" }, http.StatusBadRequest, "INVALID_REQUEST", "kind"},
 		{"unknown kind", "k", func(w *wager) { w.Kind = "CASHOUT" }, http.StatusBadRequest, "INVALID_REQUEST", "kind"},
 		{"lowercase kind", "k", func(w *wager) { w.Kind = "bet" }, http.StatusBadRequest, "INVALID_REQUEST", "kind"},
-		{"missing provider", "k", func(w *wager) { w.ProviderID = "" }, http.StatusBadRequest, "INVALID_REQUEST", "providerId"},
+		{"missing provider", "k", func(w *wager) { w.ProviderID = "" }, http.StatusForbidden, "FORBIDDEN", ""},
 		{"missing external id", "k", func(w *wager) { w.ExternalID = "" }, http.StatusBadRequest, "INVALID_REQUEST", "externalTransactionId"},
 		{"missing player", "k", func(w *wager) { w.PlayerID = "" }, http.StatusBadRequest, "INVALID_REQUEST", "playerId"},
 		{"missing round", "k", func(w *wager) { w.RoundID = "" }, http.StatusBadRequest, "INVALID_REQUEST", "roundId"},
