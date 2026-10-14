@@ -43,6 +43,7 @@ type ProcessWagerTransaction struct {
 	outbox  OutboxRepository
 	clock   Clock
 	ids     IDGenerator
+	retry   ReferenceRetryPolicy
 }
 
 func NewProcessWagerTransaction(
@@ -53,8 +54,11 @@ func NewProcessWagerTransaction(
 	outbox OutboxRepository,
 	clock Clock,
 	ids IDGenerator,
+	retry ReferenceRetryPolicy,
 ) *ProcessWagerTransaction {
-	return &ProcessWagerTransaction{tx: tx, wallets: wallets, wagers: wagers, ledger: ledger, outbox: outbox, clock: clock, ids: ids}
+	return &ProcessWagerTransaction{
+		tx: tx, wallets: wallets, wagers: wagers, ledger: ledger, outbox: outbox, clock: clock, ids: ids, retry: retry,
+	}
 }
 
 func (uc *ProcessWagerTransaction) Execute(ctx context.Context, in ProcessWagerInput) (ProcessWagerResult, error) {
@@ -118,6 +122,7 @@ func (uc *ProcessWagerTransaction) process(ctx context.Context, in ProcessWagerI
 		Kind:                           domain.TransactionKind(in.Kind),
 		Money:                          in.Money,
 		ReferenceExternalTransactionID: in.ReferenceExternalTransactionID,
+		CorrelationID:                  in.CorrelationID,
 		Now:                            now,
 	})
 	if err != nil {
@@ -138,7 +143,7 @@ func (uc *ProcessWagerTransaction) process(ctx context.Context, in ProcessWagerI
 		return ProcessWagerResult{Transaction: existing, Replay: true}, nil
 	}
 
-	reference, err := uc.resolveReference(ctx, tx)
+	reference, err := resolveReference(ctx, uc.wagers, tx)
 	if err != nil {
 		return ProcessWagerResult{}, err
 	}
@@ -147,26 +152,51 @@ func (uc *ProcessWagerTransaction) process(ctx context.Context, in ProcessWagerI
 	if err != nil {
 		return ProcessWagerResult{}, err
 	}
+	if tx.Status() == domain.StatusPendingReference {
+		if err := tx.ScheduleReferenceAttempt(now.Add(uc.retry.delayAfter(1)), now); err != nil {
+			return ProcessWagerResult{}, err
+		}
+	}
 	if err := uc.wagers.Insert(ctx, tx); err != nil {
 		return ProcessWagerResult{}, err
 	}
-	if entry != nil {
-		if err := uc.wallets.UpdateBalance(ctx, wallet); err != nil {
-			return ProcessWagerResult{}, err
-		}
-		if err := uc.ledger.Insert(ctx, *entry); err != nil {
-			return ProcessWagerResult{}, err
-		}
-	}
-
-	events, err := wagerEvents(tx, wallet, entry, uc.ids, in.CorrelationID)
-	if err != nil {
-		return ProcessWagerResult{}, err
-	}
-	if err := appendEvents(ctx, uc.outbox, events...); err != nil {
+	outcome := wagerOutcome{wallets: uc.wallets, wagers: uc.wagers, ledger: uc.ledger, outbox: uc.outbox, ids: uc.ids}
+	if err := outcome.record(ctx, tx, wallet, entry); err != nil {
 		return ProcessWagerResult{}, err
 	}
 	return ProcessWagerResult{Transaction: tx}, nil
+}
+
+// wagerOutcome persists what follows a transaction the caller has already written.
+type wagerOutcome struct {
+	wallets WalletRepository
+	wagers  WagerTransactionRepository
+	ledger  LedgerRepository
+	outbox  OutboxRepository
+	ids     IDGenerator
+}
+
+func (o wagerOutcome) record(ctx context.Context, tx *domain.WagerTransaction, wallet *domain.Wallet, entry *domain.LedgerEntry) error {
+	if entry != nil {
+		if err := o.wallets.UpdateBalance(ctx, wallet); err != nil {
+			return err
+		}
+		if err := o.ledger.Insert(ctx, *entry); err != nil {
+			return err
+		}
+	}
+
+	events, err := wagerEvents(tx, wallet, entry, o.ids)
+	if err != nil {
+		return err
+	}
+	if err := appendEvents(ctx, o.outbox, events...); err != nil {
+		return err
+	}
+	if !tx.Status().IsTerminal() {
+		return nil
+	}
+	return o.wagers.WakePendingReferences(ctx, tx.ProviderID(), tx.ExternalTransactionID(), tx.UpdatedAt())
 }
 
 // findDuplicate returns the stored transaction for a replay, nil for a new operation, or a conflict error.
@@ -192,11 +222,11 @@ func (uc *ProcessWagerTransaction) findDuplicate(ctx context.Context, in Process
 	return nil, nil
 }
 
-func (uc *ProcessWagerTransaction) resolveReference(ctx context.Context, tx *domain.WagerTransaction) (domain.Reference, error) {
+func resolveReference(ctx context.Context, wagers WagerTransactionRepository, tx *domain.WagerTransaction) (domain.Reference, error) {
 	if !tx.HasReference() {
 		return domain.Reference{}, nil
 	}
-	referenced, err := uc.wagers.GetByExternalID(ctx, tx.ProviderID(), tx.ReferenceExternalTransactionID())
+	referenced, err := wagers.GetByExternalID(ctx, tx.ProviderID(), tx.ReferenceExternalTransactionID())
 	if errors.Is(err, ErrTransactionNotFound) {
 		return domain.Reference{}, nil
 	}
@@ -204,7 +234,7 @@ func (uc *ProcessWagerTransaction) resolveReference(ctx context.Context, tx *dom
 		return domain.Reference{}, err
 	}
 
-	reversed, err := uc.wagers.HasProcessedReversal(ctx, referenced.ID())
+	reversed, err := wagers.HasProcessedReversal(ctx, referenced.ID())
 	if err != nil {
 		return domain.Reference{}, err
 	}
@@ -212,9 +242,9 @@ func (uc *ProcessWagerTransaction) resolveReference(ctx context.Context, tx *dom
 }
 
 // wagerEvents builds the events for the state the transaction reached; entry is nil when the balance did not move.
-func wagerEvents(tx *domain.WagerTransaction, wallet *domain.Wallet, entry *domain.LedgerEntry, ids IDGenerator, correlationID string) ([]domain.Event, error) {
+func wagerEvents(tx *domain.WagerTransaction, wallet *domain.Wallet, entry *domain.LedgerEntry, ids IDGenerator) ([]domain.Event, error) {
 	meta := func() domain.EventMeta {
-		return domain.EventMeta{EventID: ids.NewID(), CorrelationID: correlationID, CausationID: tx.ID(), OccurredAt: tx.UpdatedAt()}
+		return domain.EventMeta{EventID: ids.NewID(), CorrelationID: tx.CorrelationID(), CausationID: tx.ID(), OccurredAt: tx.UpdatedAt()}
 	}
 
 	var events []domain.Event

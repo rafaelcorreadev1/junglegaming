@@ -73,6 +73,12 @@ type WagerTransaction struct {
 
 	referenceExternalTransactionID string
 	referenceTransactionID         string
+	// referenceAttempts counts the lookups that did not find a usable reference.
+	referenceAttempts      int
+	nextReferenceAttemptAt time.Time
+
+	// correlationID lets work resumed later be traced back to the request that started it.
+	correlationID string
 
 	failureCode FailureCode
 	// resultBalance is the balance reported to the provider; an invalid Money means it was never observed.
@@ -95,6 +101,7 @@ type NewWagerTransactionParams struct {
 	Kind                           TransactionKind
 	Money                          Money
 	ReferenceExternalTransactionID string
+	CorrelationID                  string
 	Now                            time.Time
 }
 
@@ -147,6 +154,7 @@ func NewWagerTransaction(p NewWagerTransactionParams) (*WagerTransaction, error)
 		roundID:                        p.RoundID,
 		gameID:                         p.GameID,
 		referenceExternalTransactionID: p.ReferenceExternalTransactionID,
+		correlationID:                  p.CorrelationID,
 		createdAt:                      p.Now,
 		updatedAt:                      p.Now,
 	}, nil
@@ -226,6 +234,9 @@ type WagerTransactionState struct {
 	GameID                         string
 	ReferenceExternalTransactionID string
 	ReferenceTransactionID         string
+	ReferenceAttempts              int
+	NextReferenceAttemptAt         time.Time
+	CorrelationID                  string
 	FailureCode                    FailureCode
 	ResultBalance                  Money
 	CreatedAt                      time.Time
@@ -248,6 +259,10 @@ func RehydrateWagerTransaction(s WagerTransactionState) (*WagerTransaction, erro
 		return nil, invalid("providerId/externalTransactionId", "are required for external transactions")
 	case s.CreatedAt.IsZero() || s.UpdatedAt.IsZero():
 		return nil, invalid("timestamps", "are required")
+	case s.ReferenceAttempts < 0:
+		return nil, invalid("referenceAttempts", "must not be negative")
+	case (s.Status == StatusPendingReference) == s.NextReferenceAttemptAt.IsZero():
+		return nil, invalid("nextReferenceAttemptAt", "is required only while waiting for the reference")
 	}
 
 	return &WagerTransaction{
@@ -265,6 +280,9 @@ func RehydrateWagerTransaction(s WagerTransactionState) (*WagerTransaction, erro
 		gameID:                         s.GameID,
 		referenceExternalTransactionID: s.ReferenceExternalTransactionID,
 		referenceTransactionID:         s.ReferenceTransactionID,
+		referenceAttempts:              s.ReferenceAttempts,
+		nextReferenceAttemptAt:         s.NextReferenceAttemptAt,
+		correlationID:                  s.CorrelationID,
 		failureCode:                    s.FailureCode,
 		resultBalance:                  s.ResultBalance,
 		createdAt:                      s.CreatedAt,
@@ -287,6 +305,8 @@ func (t *WagerTransaction) GameID() string                { return t.gameID }
 func (t *WagerTransaction) FailureCode() FailureCode      { return t.failureCode }
 func (t *WagerTransaction) CreatedAt() time.Time          { return t.createdAt }
 func (t *WagerTransaction) UpdatedAt() time.Time          { return t.updatedAt }
+func (t *WagerTransaction) CorrelationID() string         { return t.correlationID }
+func (t *WagerTransaction) ReferenceAttempts() int        { return t.referenceAttempts }
 
 func (t *WagerTransaction) ReferenceExternalTransactionID() string {
 	return t.referenceExternalTransactionID
@@ -296,6 +316,10 @@ func (t *WagerTransaction) ReferenceTransactionID() string { return t.referenceT
 
 func (t *WagerTransaction) HasReference() bool { return t.referenceExternalTransactionID != "" }
 
+func (t *WagerTransaction) NextReferenceAttemptAt() (time.Time, bool) {
+	return t.nextReferenceAttemptAt, !t.nextReferenceAttemptAt.IsZero()
+}
+
 func (t *WagerTransaction) ResultBalance() (Money, bool) {
 	return t.resultBalance, t.resultBalance.IsValid()
 }
@@ -304,7 +328,25 @@ func (t *WagerTransaction) MarkPendingReference(now time.Time) error {
 	if !t.HasReference() {
 		return fmt.Errorf("%w: %s has no reference to wait for", ErrInvalidTransition, t.kind)
 	}
-	return t.transition(StatusPendingReference, now)
+	if err := t.transition(StatusPendingReference, now); err != nil {
+		return err
+	}
+	t.nextReferenceAttemptAt = now
+	return nil
+}
+
+// ScheduleReferenceAttempt counts one lookup that found no usable reference and sets when to look again.
+func (t *WagerTransaction) ScheduleReferenceAttempt(next, now time.Time) error {
+	if t.status != StatusPendingReference {
+		return fmt.Errorf("%w: %s is not waiting for a reference", ErrInvalidTransition, t.status)
+	}
+	if now.IsZero() || next.Before(now) {
+		return invalid("nextReferenceAttemptAt", "must not be in the past")
+	}
+	t.referenceAttempts++
+	t.nextReferenceAttemptAt = next
+	t.updatedAt = now
+	return nil
 }
 
 func (t *WagerTransaction) MarkProcessed(resultBalance Money, now time.Time) error {
@@ -351,5 +393,8 @@ func (t *WagerTransaction) transition(to TransactionStatus, now time.Time) error
 	}
 	t.status = to
 	t.updatedAt = now
+	if to.IsTerminal() {
+		t.nextReferenceAttemptAt = time.Time{}
+	}
 	return nil
 }

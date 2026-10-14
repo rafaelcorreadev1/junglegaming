@@ -87,7 +87,7 @@ func TestProcessRecoversWhenAnotherInstanceWinsTheInsert(t *testing.T) {
 			process := application.NewProcessWagerTransaction(
 				postgres.NewTxManager(pool), wallets, wagers,
 				postgres.NewLedgerRepository(pool), postgres.NewOutboxRepository(pool),
-				system.Clock{}, system.UUIDGenerator{},
+				system.Clock{}, system.UUIDGenerator{}, application.DefaultReferenceRetryPolicy(),
 			)
 
 			bet, _ := domain.ParseMoney("25.00", "BRL")

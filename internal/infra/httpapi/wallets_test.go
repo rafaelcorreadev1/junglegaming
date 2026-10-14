@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -33,7 +34,9 @@ type testEnv struct {
 	wagers  application.WagerTransactionRepository
 	ledger  application.LedgerRepository
 	ids     application.IDGenerator
-	clock   application.Clock
+	clock   *testClock
+	outbox  application.OutboxRepository
+	retry   application.ReferenceRetryPolicy
 }
 
 func newTestEnv(t *testing.T) *testEnv {
@@ -49,9 +52,11 @@ func newTestEnv(t *testing.T) *testEnv {
 		wagers:  postgres.NewWagerTransactionRepository(pool),
 		ledger:  postgres.NewLedgerRepository(pool),
 		ids:     system.UUIDGenerator{},
-		clock:   system.Clock{},
+		clock:   &testClock{},
+		outbox:  postgres.NewOutboxRepository(pool),
+		retry:   application.DefaultReferenceRetryPolicy(),
 	}
-	outbox := postgres.NewOutboxRepository(pool)
+	outbox := env.outbox
 
 	walletHandler := NewWalletHandler(
 		application.NewOpenWallet(env.tx, env.wallets, env.wagers, env.ledger, outbox, env.clock, env.ids),
@@ -60,13 +65,20 @@ func newTestEnv(t *testing.T) *testEnv {
 		logger,
 	)
 	wageringHandler := NewWageringHandler(
-		application.NewProcessWagerTransaction(env.tx, env.wallets, env.wagers, env.ledger, outbox, env.clock, env.ids),
+		application.NewProcessWagerTransaction(env.tx, env.wallets, env.wagers, env.ledger, outbox, env.clock, env.ids, env.retry),
 		application.NewGetWagerTransaction(env.wagers),
 		logger,
 	)
 	env.router = NewRouter(NewHealthHandler(pool, logger), walletHandler, wageringHandler, env.ids, logger)
 	return env
 }
+
+// testClock is the real clock plus an offset, so a test can jump over a backoff without sleeping.
+type testClock struct{ offset atomic.Int64 }
+
+func (c *testClock) Now() time.Time { return system.Clock{}.Now().Add(time.Duration(c.offset.Load())) }
+
+func (c *testClock) advance(d time.Duration) { c.offset.Add(int64(d)) }
 
 func (e *testEnv) do(method, path, body string) *httptest.ResponseRecorder {
 	e.t.Helper()

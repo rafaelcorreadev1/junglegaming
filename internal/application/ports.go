@@ -49,6 +49,15 @@ type WagerTransactionRepository interface {
 	GetByIdempotencyKey(ctx context.Context, providerID, idempotencyKey string) (*domain.WagerTransaction, error)
 	// HasProcessedReversal reports whether a REFUND or ROLLBACK of the transaction was already processed.
 	HasProcessedReversal(ctx context.Context, transactionID string) (bool, error)
+	// ClaimPendingReferences hands each due transaction to a single caller and hides it from the others until leaseUntil.
+	ClaimPendingReferences(ctx context.Context, now, leaseUntil time.Time, limit int) ([]PendingReference, error)
+	// WakePendingReferences makes the transactions waiting for this operation due immediately.
+	WakePendingReferences(ctx context.Context, providerID, externalTransactionID string, now time.Time) error
+}
+
+type PendingReference struct {
+	TransactionID string
+	WalletID      string
 }
 
 // LedgerRecord pairs an entry with its insertion order, which exists only in storage.

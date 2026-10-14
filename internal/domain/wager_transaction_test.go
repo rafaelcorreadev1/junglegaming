@@ -484,3 +484,56 @@ func TestRehydrateWagerTransactionRejectsCorruptState(t *testing.T) {
 		t.Errorf("OPENING without external metadata must rehydrate: %v", err)
 	}
 }
+
+func TestReferenceRetryStateFollowsTheWait(t *testing.T) {
+	refund := newTestWager(t, KindRefund, "25.00", "ext-bet")
+	if err := refund.ScheduleReferenceAttempt(testLater, testNow); !errors.Is(err, ErrInvalidTransition) {
+		t.Errorf("scheduling before waiting: error = %v, want ErrInvalidTransition", err)
+	}
+
+	if err := refund.MarkPendingReference(testNow); err != nil {
+		t.Fatalf("MarkPendingReference: %v", err)
+	}
+	if next, waiting := refund.NextReferenceAttemptAt(); !waiting || !next.Equal(testNow) || refund.ReferenceAttempts() != 0 {
+		t.Errorf("after MarkPendingReference: next = %v (%v), attempts = %d; want due now with 0 attempts", next, waiting, refund.ReferenceAttempts())
+	}
+
+	if err := refund.ScheduleReferenceAttempt(testNow.Add(-time.Second), testNow); err == nil {
+		t.Error("scheduling in the past: expected an error")
+	}
+	if err := refund.ScheduleReferenceAttempt(testLater, testNow); err != nil {
+		t.Fatalf("ScheduleReferenceAttempt: %v", err)
+	}
+	if next, _ := refund.NextReferenceAttemptAt(); !next.Equal(testLater) || refund.ReferenceAttempts() != 1 {
+		t.Errorf("after scheduling: next = %v, attempts = %d; want %v and 1", next, refund.ReferenceAttempts(), testLater)
+	}
+
+	balance, _ := ParseMoney("10.00", "BRL")
+	if err := refund.MarkRejected(FailureReferenceNotFound, balance, testLater); err != nil {
+		t.Fatalf("MarkRejected: %v", err)
+	}
+	if _, waiting := refund.NextReferenceAttemptAt(); waiting || refund.ReferenceAttempts() != 1 {
+		t.Errorf("a finished transaction must keep its attempt count and drop the next attempt")
+	}
+}
+
+func TestRehydrateRequiresNextAttemptOnlyWhileWaiting(t *testing.T) {
+	money, _ := ParseMoney("25.00", "BRL")
+	state := func(status TransactionStatus, next time.Time) WagerTransactionState {
+		return WagerTransactionState{
+			ID: "tx-1", Kind: KindRefund, Status: status, WalletID: "wallet-1", PlayerID: "player-1", Money: money,
+			ProviderID: "provider-a", ExternalTransactionID: "ext-1", NextReferenceAttemptAt: next,
+			CreatedAt: testNow, UpdatedAt: testNow,
+		}
+	}
+
+	if _, err := RehydrateWagerTransaction(state(StatusPendingReference, time.Time{})); err == nil {
+		t.Error("waiting without a next attempt: expected an error")
+	}
+	if _, err := RehydrateWagerTransaction(state(StatusProcessed, testNow)); err == nil {
+		t.Error("finished with a next attempt: expected an error")
+	}
+	if _, err := RehydrateWagerTransaction(state(StatusPendingReference, testNow)); err != nil {
+		t.Errorf("waiting with a next attempt: %v", err)
+	}
+}

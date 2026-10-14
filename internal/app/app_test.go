@@ -14,6 +14,11 @@ func TestOptionsBuildAValidDependencyGraph(t *testing.T) {
 		HTTPAddr:        "127.0.0.1:0",
 		DatabaseURL:     "postgres://user:pass@127.0.0.1:5432/wagering",
 		ShutdownTimeout: time.Second,
+
+		ReferencePollInterval:   time.Second,
+		ReferenceRetryBaseDelay: time.Second,
+		ReferenceRetryMaxDelay:  time.Minute,
+		ReferenceMaxAttempts:    10,
 	}
 
 	if err := fx.ValidateApp(Options(cfg)); err != nil {

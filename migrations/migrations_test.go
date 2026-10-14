@@ -388,6 +388,27 @@ func TestSchemaEnforcesFinancialInvariants(t *testing.T) {
 			constraint: "wallet_ledger_entries_transaction_wallet_fkey",
 		},
 		{
+			name: "waiting transaction with no next attempt",
+			run: insertRow("wager_transactions", transactionRow(54, wallet, "REFUND").with(row{
+				"status": "PENDING_REFERENCE", "result_balance_minor": nil, "result_balance_currency": nil,
+				"reference_external_transaction_id": "ext-not-yet",
+			})),
+			code:       checkViolation,
+			constraint: "wager_transactions_next_attempt_only_while_waiting",
+		},
+		{
+			name:       "finished transaction still scheduled for another attempt",
+			run:        insertRow("wager_transactions", transactionRow(55, wallet, "BET").with(row{"next_reference_attempt_at": testNow})),
+			code:       checkViolation,
+			constraint: "wager_transactions_next_attempt_only_while_waiting",
+		},
+		{
+			name:       "negative reference attempts",
+			run:        insertRow("wager_transactions", transactionRow(56, wallet, "BET").with(row{"reference_attempts": -1})),
+			code:       checkViolation,
+			constraint: "wager_transactions_reference_attempts_non_negative",
+		},
+		{
 			name: "same message twice for the same consumer",
 			run: insertRow("inbox_messages", row{
 				"consumer_name": "wager-consumer", "message_id": "msg-1", "payload_hash": "other", "received_at": testNow,
@@ -419,6 +440,7 @@ func TestSchemaEnforcesFinancialInvariants(t *testing.T) {
 			run: insertRow("wager_transactions", transactionRow(61, wallet, "REFUND").with(row{
 				"status": "PENDING_REFERENCE", "result_balance_minor": nil, "result_balance_currency": nil,
 				"reference_external_transaction_id": "ext-not-yet",
+				"reference_attempts":                1, "next_reference_attempt_at": testNow,
 			})),
 		},
 		{

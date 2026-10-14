@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 	"time"
 )
 
@@ -13,6 +14,11 @@ type Config struct {
 	DatabaseURL     string
 	LogLevel        slog.Level
 	ShutdownTimeout time.Duration
+
+	ReferencePollInterval   time.Duration
+	ReferenceRetryBaseDelay time.Duration
+	ReferenceRetryMaxDelay  time.Duration
+	ReferenceMaxAttempts    int
 }
 
 func Load() (Config, error) {
@@ -21,10 +27,9 @@ func Load() (Config, error) {
 
 func FromEnv(getenv func(string) string) (Config, error) {
 	cfg := Config{
-		HTTPAddr:        valueOr(getenv("HTTP_ADDR"), ":8080"),
-		DatabaseURL:     getenv("DATABASE_URL"),
-		LogLevel:        slog.LevelInfo,
-		ShutdownTimeout: 20 * time.Second,
+		HTTPAddr:    valueOr(getenv("HTTP_ADDR"), ":8080"),
+		DatabaseURL: getenv("DATABASE_URL"),
+		LogLevel:    slog.LevelInfo,
 	}
 
 	var errs []error
@@ -39,22 +44,59 @@ func FromEnv(getenv func(string) string) (Config, error) {
 		}
 	}
 
-	if raw := getenv("SHUTDOWN_TIMEOUT"); raw != "" {
-		timeout, err := time.ParseDuration(raw)
+	durations := []struct {
+		name     string
+		target   *time.Duration
+		fallback time.Duration
+	}{
+		{"SHUTDOWN_TIMEOUT", &cfg.ShutdownTimeout, 20 * time.Second},
+		{"REFERENCE_POLL_INTERVAL", &cfg.ReferencePollInterval, time.Second},
+		{"REFERENCE_RETRY_BASE_DELAY", &cfg.ReferenceRetryBaseDelay, time.Second},
+		{"REFERENCE_RETRY_MAX_DELAY", &cfg.ReferenceRetryMaxDelay, time.Minute},
+	}
+	for _, d := range durations {
+		value, err := positiveDuration(d.name, getenv(d.name), d.fallback)
+		if err != nil {
+			errs = append(errs, err)
+		}
+		*d.target = value
+	}
+
+	cfg.ReferenceMaxAttempts = 10
+	if raw := getenv("REFERENCE_MAX_ATTEMPTS"); raw != "" {
+		attempts, err := strconv.Atoi(raw)
 		switch {
 		case err != nil:
-			errs = append(errs, fmt.Errorf("SHUTDOWN_TIMEOUT: %w", err))
-		case timeout <= 0:
-			errs = append(errs, errors.New("SHUTDOWN_TIMEOUT must be positive"))
+			errs = append(errs, fmt.Errorf("REFERENCE_MAX_ATTEMPTS: %w", err))
+		case attempts < 1:
+			errs = append(errs, errors.New("REFERENCE_MAX_ATTEMPTS must be at least 1"))
 		default:
-			cfg.ShutdownTimeout = timeout
+			cfg.ReferenceMaxAttempts = attempts
 		}
+	}
+
+	if cfg.ReferenceRetryMaxDelay < cfg.ReferenceRetryBaseDelay {
+		errs = append(errs, errors.New("REFERENCE_RETRY_MAX_DELAY must not be shorter than REFERENCE_RETRY_BASE_DELAY"))
 	}
 
 	if err := errors.Join(errs...); err != nil {
 		return Config{}, fmt.Errorf("invalid configuration: %w", err)
 	}
 	return cfg, nil
+}
+
+func positiveDuration(name, raw string, fallback time.Duration) (time.Duration, error) {
+	if raw == "" {
+		return fallback, nil
+	}
+	value, err := time.ParseDuration(raw)
+	switch {
+	case err != nil:
+		return fallback, fmt.Errorf("%s: %w", name, err)
+	case value <= 0:
+		return fallback, fmt.Errorf("%s must be positive", name)
+	}
+	return value, nil
 }
 
 func valueOr(value, fallback string) string {

@@ -28,6 +28,11 @@ func TestFromEnvAppliesDefaults(t *testing.T) {
 	if cfg.ShutdownTimeout != 20*time.Second {
 		t.Errorf("ShutdownTimeout = %v, want 20s", cfg.ShutdownTimeout)
 	}
+	if cfg.ReferencePollInterval != time.Second || cfg.ReferenceRetryBaseDelay != time.Second ||
+		cfg.ReferenceRetryMaxDelay != time.Minute || cfg.ReferenceMaxAttempts != 10 {
+		t.Errorf("reference retry defaults = %v/%v/%v/%d, want 1s/1s/1m/10",
+			cfg.ReferencePollInterval, cfg.ReferenceRetryBaseDelay, cfg.ReferenceRetryMaxDelay, cfg.ReferenceMaxAttempts)
+	}
 }
 
 func TestFromEnvReadsOverrides(t *testing.T) {
@@ -36,6 +41,11 @@ func TestFromEnvReadsOverrides(t *testing.T) {
 		"HTTP_ADDR":        ":9090",
 		"LOG_LEVEL":        "debug",
 		"SHUTDOWN_TIMEOUT": "5s",
+
+		"REFERENCE_POLL_INTERVAL":    "250ms",
+		"REFERENCE_RETRY_BASE_DELAY": "2s",
+		"REFERENCE_RETRY_MAX_DELAY":  "30s",
+		"REFERENCE_MAX_ATTEMPTS":     "4",
 	}))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -49,6 +59,11 @@ func TestFromEnvReadsOverrides(t *testing.T) {
 	}
 	if cfg.ShutdownTimeout != 5*time.Second {
 		t.Errorf("ShutdownTimeout = %v, want 5s", cfg.ShutdownTimeout)
+	}
+	if cfg.ReferencePollInterval != 250*time.Millisecond || cfg.ReferenceRetryBaseDelay != 2*time.Second ||
+		cfg.ReferenceRetryMaxDelay != 30*time.Second || cfg.ReferenceMaxAttempts != 4 {
+		t.Errorf("reference retry = %v/%v/%v/%d, want 250ms/2s/30s/4",
+			cfg.ReferencePollInterval, cfg.ReferenceRetryBaseDelay, cfg.ReferenceRetryMaxDelay, cfg.ReferenceMaxAttempts)
 	}
 }
 
@@ -72,6 +87,31 @@ func TestFromEnvRejectsInvalidValues(t *testing.T) {
 			name:    "malformed shutdown timeout",
 			env:     map[string]string{"DATABASE_URL": "x", "SHUTDOWN_TIMEOUT": "soon"},
 			wantErr: "SHUTDOWN_TIMEOUT",
+		},
+		{
+			name:    "malformed reference poll interval",
+			env:     map[string]string{"DATABASE_URL": "x", "REFERENCE_POLL_INTERVAL": "often"},
+			wantErr: "REFERENCE_POLL_INTERVAL",
+		},
+		{
+			name:    "non-positive reference base delay",
+			env:     map[string]string{"DATABASE_URL": "x", "REFERENCE_RETRY_BASE_DELAY": "-1s"},
+			wantErr: "REFERENCE_RETRY_BASE_DELAY must be positive",
+		},
+		{
+			name:    "reference max delay below the base delay",
+			env:     map[string]string{"DATABASE_URL": "x", "REFERENCE_RETRY_BASE_DELAY": "10s", "REFERENCE_RETRY_MAX_DELAY": "5s"},
+			wantErr: "REFERENCE_RETRY_MAX_DELAY must not be shorter",
+		},
+		{
+			name:    "malformed reference max attempts",
+			env:     map[string]string{"DATABASE_URL": "x", "REFERENCE_MAX_ATTEMPTS": "many"},
+			wantErr: "REFERENCE_MAX_ATTEMPTS",
+		},
+		{
+			name:    "zero reference max attempts",
+			env:     map[string]string{"DATABASE_URL": "x", "REFERENCE_MAX_ATTEMPTS": "0"},
+			wantErr: "REFERENCE_MAX_ATTEMPTS must be at least 1",
 		},
 		{
 			name:    "non-positive shutdown timeout",
