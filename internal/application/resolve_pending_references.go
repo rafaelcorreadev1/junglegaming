@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"wagering-service/internal/domain"
+	"github.com/rafaelcorreadev1/junglegaming/internal/domain"
 )
 
 // ReferenceRetryPolicy decides how long a transaction waits for the operation it references.

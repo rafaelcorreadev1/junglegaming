@@ -3,7 +3,7 @@ package application
 import (
 	"testing"
 
-	"wagering-service/internal/domain"
+	"github.com/rafaelcorreadev1/junglegaming/internal/domain"
 )
 
 func hashInput(t *testing.T, amount string) ProcessWagerInput {

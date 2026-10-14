@@ -7,8 +7,8 @@ import (
 	"log/slog"
 	"testing"
 
-	"wagering-service/internal/application"
-	"wagering-service/internal/config"
+	"github.com/rafaelcorreadev1/junglegaming/internal/application"
+	"github.com/rafaelcorreadev1/junglegaming/internal/config"
 )
 
 type stubHandler struct {

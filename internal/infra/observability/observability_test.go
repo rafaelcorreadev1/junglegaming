@@ -14,7 +14,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
-	"wagering-service/internal/application"
+	"github.com/rafaelcorreadev1/junglegaming/internal/application"
 )
 
 func logLine(t *testing.T, buf *bytes.Buffer) map[string]any {
@@ -109,6 +109,21 @@ func TestPublicationsCountAsSentOrRetried(t *testing.T) {
 	}
 	if got := testutil.ToFloat64(metrics.published); got != 1 {
 		t.Errorf("published = %v, want 1", got)
+	}
+}
+
+func TestFailureSeriesAreExposedBeforeTheFirstFailure(t *testing.T) {
+	registry := NewRegistry()
+	NewMetrics(registry, fakeOutbox{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	for name, want := range map[string]int{
+		"wagering_retries_total":               3,
+		"wagering_dlq_messages_total":          2,
+		"wagering_concurrency_conflicts_total": 3,
+		"wagering_reconciliations_total":       2,
+	} {
+		if n, err := testutil.GatherAndCount(registry, name); err != nil || n != want {
+			t.Errorf("%s series = %d, %v; want %d", name, n, err, want)
+		}
 	}
 }
 

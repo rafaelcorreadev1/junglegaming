@@ -6,9 +6,9 @@ import (
 	"net/http"
 	"strings"
 
-	"wagering-service/internal/application"
-	"wagering-service/internal/infra/auth"
-	"wagering-service/internal/infra/observability"
+	"github.com/rafaelcorreadev1/junglegaming/internal/application"
+	"github.com/rafaelcorreadev1/junglegaming/internal/infra/auth"
+	"github.com/rafaelcorreadev1/junglegaming/internal/infra/observability"
 )
 
 type TokenVerifier interface {

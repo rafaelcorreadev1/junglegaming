@@ -11,9 +11,9 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
-	"wagering-service/internal/application"
-	"wagering-service/internal/domain"
-	"wagering-service/internal/infra/observability"
+	"github.com/rafaelcorreadev1/junglegaming/internal/application"
+	"github.com/rafaelcorreadev1/junglegaming/internal/domain"
+	"github.com/rafaelcorreadev1/junglegaming/internal/infra/observability"
 )
 
 const maxRequestBodyBytes = 1 << 20

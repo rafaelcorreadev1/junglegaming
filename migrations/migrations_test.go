@@ -9,10 +9,11 @@ import (
 	"strings"
 	"testing"
 	"time"
-	"wagering-service/internal/testenv"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/rafaelcorreadev1/junglegaming/internal/testenv"
 )
 
 const (
@@ -35,7 +36,7 @@ func connect(t *testing.T) *pgx.Conn {
 		t.Fatalf("connect: %v", err)
 	}
 
-	schema := fmt.Sprintf("migrations_test_%d", time.Now().UnixNano())
+	schema := testenv.UniqueName("migrations_test_")
 	mustExec(t, conn, fmt.Sprintf("CREATE SCHEMA %s", schema))
 	mustExec(t, conn, fmt.Sprintf("SET search_path TO %s", schema))
 

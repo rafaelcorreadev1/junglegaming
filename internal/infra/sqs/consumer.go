@@ -13,10 +13,10 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
 	"go.uber.org/fx"
 
-	"wagering-service/internal/application"
-	"wagering-service/internal/domain"
-	"wagering-service/internal/infra/lifecycle"
-	"wagering-service/internal/infra/observability"
+	"github.com/rafaelcorreadev1/junglegaming/internal/application"
+	"github.com/rafaelcorreadev1/junglegaming/internal/domain"
+	"github.com/rafaelcorreadev1/junglegaming/internal/infra/lifecycle"
+	"github.com/rafaelcorreadev1/junglegaming/internal/infra/observability"
 )
 
 const (

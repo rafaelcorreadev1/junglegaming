@@ -6,7 +6,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"wagering-service/internal/application"
+	"github.com/rafaelcorreadev1/junglegaming/internal/application"
 )
 
 type InboxRepository struct {

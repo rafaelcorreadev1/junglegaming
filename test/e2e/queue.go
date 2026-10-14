@@ -12,8 +12,8 @@ import (
 	awssqs "github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/google/uuid"
 
-	"wagering-service/internal/infra/sqs"
-	"wagering-service/internal/testenv"
+	"github.com/rafaelcorreadev1/junglegaming/internal/infra/sqs"
+	"github.com/rafaelcorreadev1/junglegaming/internal/testenv"
 )
 
 // Queue sends wager messages the way a provider would, straight to the queue the service consumes.

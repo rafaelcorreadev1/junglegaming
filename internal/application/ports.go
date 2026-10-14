@@ -5,7 +5,7 @@ import (
 	"errors"
 	"time"
 
-	"wagering-service/internal/domain"
+	"github.com/rafaelcorreadev1/junglegaming/internal/domain"
 )
 
 var (

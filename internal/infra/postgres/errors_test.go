@@ -9,7 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"wagering-service/internal/application"
+	"github.com/rafaelcorreadev1/junglegaming/internal/application"
 )
 
 func TestTranslateSeparatesTransientFromPermanentErrors(t *testing.T) {

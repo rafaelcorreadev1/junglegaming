@@ -19,7 +19,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"wagering-service/internal/testenv"
+	"github.com/rafaelcorreadev1/junglegaming/internal/testenv"
 )
 
 const (

@@ -9,8 +9,8 @@ import (
 	"fmt"
 	"time"
 
-	"wagering-service/internal/application"
-	"wagering-service/internal/domain"
+	"github.com/rafaelcorreadev1/junglegaming/internal/application"
+	"github.com/rafaelcorreadev1/junglegaming/internal/domain"
 )
 
 const wagerRequestedType = "WagerTransactionRequested"

@@ -10,8 +10,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"wagering-service/internal/testenv"
-	"wagering-service/test/e2e"
+	"github.com/rafaelcorreadev1/junglegaming/internal/testenv"
+	"github.com/rafaelcorreadev1/junglegaming/test/e2e"
 )
 
 func newClient(t *testing.T) *e2e.Client {

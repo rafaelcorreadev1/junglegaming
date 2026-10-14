@@ -6,7 +6,7 @@ import (
 
 	"go.uber.org/fx"
 
-	"wagering-service/internal/config"
+	"github.com/rafaelcorreadev1/junglegaming/internal/config"
 )
 
 func TestOptionsBuildAValidDependencyGraph(t *testing.T) {

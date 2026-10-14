@@ -17,10 +17,11 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"go.uber.org/fx/fxtest"
 
-	"wagering-service/internal/application"
-	"wagering-service/internal/infra/lifecycle"
-	"wagering-service/internal/infra/observability"
-	"wagering-service/internal/infra/system"
+	"github.com/rafaelcorreadev1/junglegaming/internal/application"
+	"github.com/rafaelcorreadev1/junglegaming/internal/infra/lifecycle"
+	"github.com/rafaelcorreadev1/junglegaming/internal/infra/observability"
+	"github.com/rafaelcorreadev1/junglegaming/internal/infra/system"
+	"github.com/rafaelcorreadev1/junglegaming/internal/testenv"
 )
 
 type queuePair struct {
@@ -42,7 +43,7 @@ func newQueuePair(t *testing.T, maxReceiveCount int) queuePair {
 	}
 	redrive := fmt.Sprintf(`{"deadLetterTargetArn":%q,"maxReceiveCount":"%d"}`, attrs.Attributes["QueueArn"], maxReceiveCount)
 	created, err := client.CreateQueue(ctx, &sqs.CreateQueueInput{
-		QueueName:  aws.String(fmt.Sprintf("test-source-%d.fifo", time.Now().UnixNano())),
+		QueueName:  aws.String(testenv.UniqueName("test-source-") + ".fifo"),
 		Attributes: map[string]string{"FifoQueue": "true", "ContentBasedDeduplication": "false", "RedrivePolicy": redrive},
 	})
 	if err != nil {

@@ -24,10 +24,10 @@ import (
 	awssqs "github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"wagering-service/internal/infra/faults"
-	"wagering-service/internal/testdb"
-	"wagering-service/internal/testenv"
-	"wagering-service/test/e2e"
+	"github.com/rafaelcorreadev1/junglegaming/internal/infra/faults"
+	"github.com/rafaelcorreadev1/junglegaming/internal/testdb"
+	"github.com/rafaelcorreadev1/junglegaming/internal/testenv"
+	"github.com/rafaelcorreadev1/junglegaming/test/e2e"
 )
 
 var (
@@ -48,7 +48,7 @@ func build(t *testing.T) string {
 		if runtime.GOOS == "windows" {
 			binary += ".exe"
 		}
-		output, err := exec.Command("go", "build", "-o", binary, "wagering-service/cmd/app").CombinedOutput()
+		output, err := exec.Command("go", "build", "-o", binary, "github.com/rafaelcorreadev1/junglegaming/cmd/app").CombinedOutput()
 		if err != nil {
 			buildErr = fmt.Errorf("go build: %v\n%s", err, output)
 		}
@@ -73,7 +73,7 @@ func newStack(t *testing.T) *stack {
 	queue := e2e.NewQueue(t)
 	newQueue := func(name string) string {
 		created, err := queue.Client.CreateQueue(context.Background(), &awssqs.CreateQueueInput{
-			QueueName:  aws.String(fmt.Sprintf("recovery-%s-%d.fifo", name, time.Now().UnixNano())),
+			QueueName:  aws.String(testenv.UniqueName("recovery-"+name+"-") + ".fifo"),
 			Attributes: map[string]string{"FifoQueue": "true", "ContentBasedDeduplication": "false"},
 		})
 		if err != nil {

@@ -10,8 +10,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
 
-	"wagering-service/internal/application"
-	"wagering-service/internal/testenv"
+	"github.com/rafaelcorreadev1/junglegaming/internal/application"
+	"github.com/rafaelcorreadev1/junglegaming/internal/testenv"
 )
 
 // newTestQueue creates a FIFO queue of its own in LocalStack.
@@ -27,7 +27,7 @@ func newTestQueue(t *testing.T) (*sqs.Client, string) {
 		t.Fatalf("client: %v", err)
 	}
 	created, err := client.CreateQueue(ctx, &sqs.CreateQueueInput{
-		QueueName:  aws.String(fmt.Sprintf("test-%d.fifo", time.Now().UnixNano())),
+		QueueName:  aws.String(testenv.UniqueName("test-") + ".fifo"),
 		Attributes: map[string]string{"FifoQueue": "true", "ContentBasedDeduplication": "false"},
 	})
 	if err != nil {

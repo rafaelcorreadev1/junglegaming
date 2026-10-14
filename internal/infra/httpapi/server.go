@@ -14,10 +14,10 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/fx"
 
-	"wagering-service/internal/application"
-	"wagering-service/internal/config"
-	"wagering-service/internal/infra/auth"
-	"wagering-service/internal/infra/observability"
+	"github.com/rafaelcorreadev1/junglegaming/internal/application"
+	"github.com/rafaelcorreadev1/junglegaming/internal/config"
+	"github.com/rafaelcorreadev1/junglegaming/internal/infra/auth"
+	"github.com/rafaelcorreadev1/junglegaming/internal/infra/observability"
 )
 
 var Module = fx.Module("httpapi",

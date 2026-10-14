@@ -1,4 +1,4 @@
-module wagering-service
+module github.com/rafaelcorreadev1/junglegaming
 
 go 1.27.0
 

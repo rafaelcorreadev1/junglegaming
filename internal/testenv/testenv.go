@@ -6,7 +6,10 @@ package testenv
 
 import (
 	"os"
+	"strings"
 	"testing"
+
+	"github.com/google/uuid"
 )
 
 const (
@@ -34,4 +37,9 @@ func Lookup(t testing.TB, name, fallback string) string {
 		t.Skipf("%s is not set; run with -tags=integration to use the Compose defaults", name)
 	}
 	return fallback
+}
+
+// UniqueName adds a random suffix; a clock-based one repeats when tests start in the same tick, as on Windows.
+func UniqueName(prefix string) string {
+	return prefix + strings.ReplaceAll(uuid.NewString(), "-", "")
 }

@@ -10,9 +10,9 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"wagering-service/internal/application"
-	"wagering-service/internal/domain"
-	"wagering-service/internal/testdb"
+	"github.com/rafaelcorreadev1/junglegaming/internal/application"
+	"github.com/rafaelcorreadev1/junglegaming/internal/domain"
+	"github.com/rafaelcorreadev1/junglegaming/internal/testdb"
 )
 
 var testNow = time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)

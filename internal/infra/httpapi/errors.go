@@ -7,8 +7,8 @@ import (
 	"log/slog"
 	"net/http"
 
-	"wagering-service/internal/application"
-	"wagering-service/internal/domain"
+	"github.com/rafaelcorreadev1/junglegaming/internal/application"
+	"github.com/rafaelcorreadev1/junglegaming/internal/domain"
 )
 
 const retryAfterSeconds = "1"

@@ -15,8 +15,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
 	"github.com/google/uuid"
 
-	"wagering-service/internal/config"
-	"wagering-service/test/e2e"
+	"github.com/rafaelcorreadev1/junglegaming/internal/config"
+	"github.com/rafaelcorreadev1/junglegaming/test/e2e"
 )
 
 // §13 scenario 5.

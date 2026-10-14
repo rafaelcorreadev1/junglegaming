@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"wagering-service/internal/application"
-	"wagering-service/internal/domain"
-	"wagering-service/internal/infra/postgres"
+	"github.com/rafaelcorreadev1/junglegaming/internal/application"
+	"github.com/rafaelcorreadev1/junglegaming/internal/domain"
+	"github.com/rafaelcorreadev1/junglegaming/internal/infra/postgres"
 )
 
 func (e *testEnv) resolver(policy application.ReferenceRetryPolicy) *application.ResolvePendingReferences {

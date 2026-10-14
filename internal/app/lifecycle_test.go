@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -19,10 +18,10 @@ import (
 	"go.uber.org/fx"
 	"go.uber.org/goleak"
 
-	"wagering-service/internal/config"
-	"wagering-service/internal/infra/sqs"
-	"wagering-service/internal/testdb"
-	"wagering-service/internal/testenv"
+	"github.com/rafaelcorreadev1/junglegaming/internal/config"
+	"github.com/rafaelcorreadev1/junglegaming/internal/infra/sqs"
+	"github.com/rafaelcorreadev1/junglegaming/internal/testdb"
+	"github.com/rafaelcorreadev1/junglegaming/internal/testenv"
 )
 
 type lockedBuffer struct {
@@ -57,7 +56,7 @@ func realConfig(t *testing.T) config.Config {
 	}
 	queue := func(name string) string {
 		created, err := client.CreateQueue(context.Background(), &awssqs.CreateQueueInput{
-			QueueName:  aws.String(fmt.Sprintf("%s-%d.fifo", name, time.Now().UnixNano())),
+			QueueName:  aws.String(testenv.UniqueName(name+"-") + ".fifo"),
 			Attributes: map[string]string{"FifoQueue": "true", "ContentBasedDeduplication": "false"},
 		})
 		if err != nil {

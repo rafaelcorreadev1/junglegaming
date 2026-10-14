@@ -6,10 +6,10 @@ import (
 
 	"go.uber.org/fx"
 
-	"wagering-service/internal/application"
-	"wagering-service/internal/config"
-	"wagering-service/internal/infra/observability"
-	"wagering-service/internal/infra/sqs"
+	"github.com/rafaelcorreadev1/junglegaming/internal/application"
+	"github.com/rafaelcorreadev1/junglegaming/internal/config"
+	"github.com/rafaelcorreadev1/junglegaming/internal/infra/observability"
+	"github.com/rafaelcorreadev1/junglegaming/internal/infra/sqs"
 )
 
 var Module = fx.Module("worker",

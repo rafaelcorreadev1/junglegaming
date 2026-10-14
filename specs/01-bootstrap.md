@@ -33,7 +33,7 @@ Ter um processo Go que sobe com Fx, lê e valida configuração, conecta no Post
 
 ## Status: concluída
 
-Versão do Go: `1.27.0`. Módulo: `wagering-service`.
+Versão do Go: `1.27.0`. Módulo: `github.com/rafaelcorreadev1/junglegaming` (o caminho do repositório; até a spec 16 era `wagering-service`).
 
 `go test -race` exige cgo, que não vem com o Go no Windows. Rodar em container:
 

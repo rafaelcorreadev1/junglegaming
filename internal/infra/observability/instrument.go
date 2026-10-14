@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"wagering-service/internal/application"
+	"github.com/rafaelcorreadev1/junglegaming/internal/application"
 )
 
 // InstrumentTxManager counts the transactions that ended by losing a race; it is applied with fx.Decorate.

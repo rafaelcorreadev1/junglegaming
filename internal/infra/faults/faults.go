@@ -6,9 +6,9 @@ import (
 	"log/slog"
 	"os"
 
-	"wagering-service/internal/application"
-	"wagering-service/internal/config"
-	"wagering-service/internal/infra/sqs"
+	"github.com/rafaelcorreadev1/junglegaming/internal/application"
+	"github.com/rafaelcorreadev1/junglegaming/internal/config"
+	"github.com/rafaelcorreadev1/junglegaming/internal/infra/sqs"
 )
 
 // ExitCode tells an injected crash apart from any other failure.

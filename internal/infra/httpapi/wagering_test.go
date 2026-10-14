@@ -9,7 +9,7 @@ import (
 	"sync"
 	"testing"
 
-	"wagering-service/internal/domain"
+	"github.com/rafaelcorreadev1/junglegaming/internal/domain"
 )
 
 type wager struct {

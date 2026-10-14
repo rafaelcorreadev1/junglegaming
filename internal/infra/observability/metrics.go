@@ -10,8 +10,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 
-	"wagering-service/internal/application"
-	"wagering-service/internal/domain"
+	"github.com/rafaelcorreadev1/junglegaming/internal/application"
+	"github.com/rafaelcorreadev1/junglegaming/internal/domain"
 )
 
 const (
@@ -97,9 +97,19 @@ func NewMetrics(registry *prometheus.Registry, outbox application.OutboxReposito
 
 	registry.MustRegister(m.transactions, m.duplicates, m.retries, m.published, m.deadLetters, m.conflicts,
 		m.processing, m.httpRequests, m.httpDuration, m.reconciliations, outboxAge)
-	// Both series exist from the start, so a divergence shows up as an increase rather than as a new series.
-	m.reconciliations.WithLabelValues("consistent")
-	m.reconciliations.WithLabelValues("divergent")
+	// Known series exist from the start, so a failure shows up as an increase rather than as a new series.
+	for _, result := range []string{"consistent", "divergent"} {
+		m.reconciliations.WithLabelValues(result)
+	}
+	for _, component := range []string{"outbox_publisher", "sqs_consumer", "reference_resolver"} {
+		m.retries.WithLabelValues(component)
+	}
+	for _, reason := range []string{"permanent_error", "invalid_message"} {
+		m.deadLetters.WithLabelValues(reason)
+	}
+	for _, reason := range []string{"duplicate_race", "concurrent_update", "deadlock_or_serialization"} {
+		m.conflicts.WithLabelValues(reason)
+	}
 	return m
 }
 

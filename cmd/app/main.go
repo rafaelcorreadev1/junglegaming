@@ -6,8 +6,8 @@ import (
 
 	"go.uber.org/fx"
 
-	"wagering-service/internal/app"
-	"wagering-service/internal/config"
+	"github.com/rafaelcorreadev1/junglegaming/internal/app"
+	"github.com/rafaelcorreadev1/junglegaming/internal/config"
 )
 
 func main() {

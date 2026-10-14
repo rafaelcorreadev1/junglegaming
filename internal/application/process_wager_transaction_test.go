@@ -7,11 +7,11 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"wagering-service/internal/application"
-	"wagering-service/internal/domain"
-	"wagering-service/internal/infra/postgres"
-	"wagering-service/internal/infra/system"
-	"wagering-service/internal/testdb"
+	"github.com/rafaelcorreadev1/junglegaming/internal/application"
+	"github.com/rafaelcorreadev1/junglegaming/internal/domain"
+	"github.com/rafaelcorreadev1/junglegaming/internal/infra/postgres"
+	"github.com/rafaelcorreadev1/junglegaming/internal/infra/system"
+	"github.com/rafaelcorreadev1/junglegaming/internal/testdb"
 )
 
 // racingWagers simulates another instance committing the same operation between this one's duplicate check and its insert.

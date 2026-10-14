@@ -8,7 +8,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
 
-	"wagering-service/internal/config"
+	"github.com/rafaelcorreadev1/junglegaming/internal/config"
 )
 
 // Probe checks every queue the service reads or writes, not only that SQS answers.

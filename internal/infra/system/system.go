@@ -7,7 +7,7 @@ import (
 	"github.com/google/uuid"
 	"go.uber.org/fx"
 
-	"wagering-service/internal/application"
+	"github.com/rafaelcorreadev1/junglegaming/internal/application"
 )
 
 var Module = fx.Module("system",

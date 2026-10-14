@@ -1,1 +1,2 @@
-*.sh text eol=lf
+# LF everywhere: gofmt rejects CRLF and the LocalStack init script runs on Linux.
+* text=auto eol=lf

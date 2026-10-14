@@ -52,10 +52,17 @@ internal/infra/postgres/  repositórios, transação SQL
 internal/infra/httpapi/   handlers, middlewares, contratos JSON
 internal/infra/sqs/       consumidor, publisher
 internal/infra/auth/      validação de JWT
+internal/infra/worker/    workers de referências pendentes e outbox
+internal/infra/lifecycle/ parada em duas fases dos workers
 internal/infra/observability/
+internal/infra/system/    relógio e gerador de UUID v7
+internal/infra/faults/    injeção de falha para os testes de recuperação
+internal/app/             composição Fx
 internal/config/
+internal/testdb/, internal/testenv/   apoio aos testes com infraestrutura real
 migrations/
 deploy/                   realm do Keycloak, script de filas do LocalStack
+test/                     suítes caixa-preta (build tag integration)
 ```
 
 Regra de dependência (§4): `domain` não importa nada de fora da biblioteca padrão. `application` importa `domain`. `infra` importa os dois. Só `cmd/app` e os módulos Fx conhecem o Fx.

@@ -7,7 +7,7 @@ import (
 
 	"go.uber.org/fx"
 
-	"wagering-service/internal/infra/lifecycle"
+	"github.com/rafaelcorreadev1/junglegaming/internal/infra/lifecycle"
 )
 
 // Job runs one round of background work; more reports that work may still be due right away.

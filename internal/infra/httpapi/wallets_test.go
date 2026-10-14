@@ -19,13 +19,13 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
 
-	"wagering-service/internal/application"
-	"wagering-service/internal/domain"
-	"wagering-service/internal/infra/auth"
-	"wagering-service/internal/infra/observability"
-	"wagering-service/internal/infra/postgres"
-	"wagering-service/internal/infra/system"
-	"wagering-service/internal/testdb"
+	"github.com/rafaelcorreadev1/junglegaming/internal/application"
+	"github.com/rafaelcorreadev1/junglegaming/internal/domain"
+	"github.com/rafaelcorreadev1/junglegaming/internal/infra/auth"
+	"github.com/rafaelcorreadev1/junglegaming/internal/infra/observability"
+	"github.com/rafaelcorreadev1/junglegaming/internal/infra/postgres"
+	"github.com/rafaelcorreadev1/junglegaming/internal/infra/system"
+	"github.com/rafaelcorreadev1/junglegaming/internal/testdb"
 )
 
 const playerID = "0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1"

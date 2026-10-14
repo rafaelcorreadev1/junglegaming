@@ -3,26 +3,24 @@ package testdb
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"wagering-service/internal/testenv"
+	"github.com/rafaelcorreadev1/junglegaming/internal/testenv"
 )
 
 func NewPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	url := testenv.DatabaseURL(t)
 	ctx := context.Background()
-	schema := fmt.Sprintf("test_%d", time.Now().UnixNano())
+	schema := testenv.UniqueName("test_")
 
 	admin, err := pgx.Connect(ctx, url)
 	if err != nil {

@@ -9,8 +9,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"wagering-service/internal/application"
-	"wagering-service/internal/infra/observability"
+	"github.com/rafaelcorreadev1/junglegaming/internal/application"
+	"github.com/rafaelcorreadev1/junglegaming/internal/infra/observability"
 )
 
 const (

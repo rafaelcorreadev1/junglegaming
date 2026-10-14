@@ -12,7 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"wagering-service/test/e2e"
+	"github.com/rafaelcorreadev1/junglegaming/test/e2e"
 )
 
 func TestTokensThatAreMissingInvalidOrExpiredAreRejectedWithoutEffect(t *testing.T) {

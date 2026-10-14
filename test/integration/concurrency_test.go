@@ -5,7 +5,7 @@ package integration
 import (
 	"testing"
 
-	"wagering-service/test/e2e"
+	"github.com/rafaelcorreadev1/junglegaming/test/e2e"
 )
 
 func TestSameBetSentFiftyTimesInParallelDebitsOnce(t *testing.T) {

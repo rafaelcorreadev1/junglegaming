@@ -13,9 +13,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
 	"go.uber.org/fx"
 
-	"wagering-service/internal/application"
-	"wagering-service/internal/config"
-	"wagering-service/internal/infra/observability"
+	"github.com/rafaelcorreadev1/junglegaming/internal/application"
+	"github.com/rafaelcorreadev1/junglegaming/internal/config"
+	"github.com/rafaelcorreadev1/junglegaming/internal/infra/observability"
 )
 
 type ClientConfig struct {

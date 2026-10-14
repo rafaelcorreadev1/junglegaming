@@ -8,8 +8,8 @@ import (
 
 	"go.uber.org/fx"
 
-	"wagering-service/internal/application"
-	"wagering-service/internal/config"
+	"github.com/rafaelcorreadev1/junglegaming/internal/application"
+	"github.com/rafaelcorreadev1/junglegaming/internal/config"
 )
 
 var Module = fx.Module("observability",

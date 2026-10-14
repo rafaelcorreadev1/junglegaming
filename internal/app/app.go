@@ -6,15 +6,15 @@ import (
 	"go.uber.org/fx"
 	"go.uber.org/fx/fxevent"
 
-	"wagering-service/internal/application"
-	"wagering-service/internal/config"
-	"wagering-service/internal/infra/faults"
-	"wagering-service/internal/infra/httpapi"
-	"wagering-service/internal/infra/observability"
-	"wagering-service/internal/infra/postgres"
-	"wagering-service/internal/infra/sqs"
-	"wagering-service/internal/infra/system"
-	"wagering-service/internal/infra/worker"
+	"github.com/rafaelcorreadev1/junglegaming/internal/application"
+	"github.com/rafaelcorreadev1/junglegaming/internal/config"
+	"github.com/rafaelcorreadev1/junglegaming/internal/infra/faults"
+	"github.com/rafaelcorreadev1/junglegaming/internal/infra/httpapi"
+	"github.com/rafaelcorreadev1/junglegaming/internal/infra/observability"
+	"github.com/rafaelcorreadev1/junglegaming/internal/infra/postgres"
+	"github.com/rafaelcorreadev1/junglegaming/internal/infra/sqs"
+	"github.com/rafaelcorreadev1/junglegaming/internal/infra/system"
+	"github.com/rafaelcorreadev1/junglegaming/internal/infra/worker"
 )
 
 func Options(cfg config.Config) fx.Option {
