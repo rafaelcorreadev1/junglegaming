@@ -6,6 +6,96 @@ Serviço em Go que movimenta carteiras de jogadores a partir de operações de p
 - Decisões, limitações e interpretações: [`ARCHITECTURE.md`](ARCHITECTURE.md)
 - Especificações de cada etapa: [`specs/`](specs)
 
+## Avaliação rápida
+
+Precisa só de Docker, Go 1.27, `curl` e um shell POSIX (Linux, macOS, WSL ou Git Bash). Leva uns 10 minutos, quase tudo no primeiro `docker compose up`.
+
+**1. Clonar e subir tudo, com três réplicas:**
+
+```sh
+git clone https://github.com/rafaelcorreadev1/junglegaming.git
+cd junglegaming
+docker compose --profile multi up -d --build --wait
+curl -s http://localhost:8080/health/ready   # {"status":"up",...}
+```
+
+**2. Fluxo autenticado de ponta a ponta.** Cole o bloco inteiro no mesmo terminal:
+
+```sh
+API=http://localhost:8080
+token() {
+  curl -s -X POST http://localhost:8081/realms/wagering/protocol/openid-connect/token \
+    -d grant_type=client_credentials -d client_id="$1" -d client_secret="$1-secret" |
+    sed -E 's/.*"access_token":"([^"]+)".*/\1/'
+}
+INTERNAL=$(token wallet-service); PROVIDER_A=$(token provider-a); PROVIDER_B=$(token provider-b)
+PLAYER="player-$(date +%s)"
+
+echo "--- sem token: 401"
+curl -s -o /dev/null -w '%{http_code}\n' -X POST $API/wallets
+
+echo "--- abrir carteira com 100.00"
+WALLET=$(curl -s -X POST $API/wallets -H "Authorization: Bearer $INTERNAL" -H 'Content-Type: application/json' \
+  -d '{"playerId":"'"$PLAYER"'","initialBalance":{"amount":"100.00","currency":"BRL"}}' |
+  sed -E 's/.*"id":"([^"]+)".*/\1/')
+echo "walletId=$WALLET"
+
+bet() { # $1 = id externo, $2 = valor
+  curl -s -X POST $API/wagering/transactions -H "Authorization: Bearer $PROVIDER_A" \
+    -H 'Content-Type: application/json' -H "Idempotency-Key: provider-a:$1" \
+    -d '{"providerId":"provider-a","externalTransactionId":"'"$1"'","playerId":"'"$PLAYER"'",
+         "walletId":"'"$WALLET"'","roundId":"round-1","gameId":"slot-1","kind":"BET",
+         "money":{"amount":"'"$2"'","currency":"BRL"}}'; echo
+}
+
+echo "--- duas apostas de 80.00 ao mesmo tempo: uma PROCESSED, outra REJECTED (INSUFFICIENT_FUNDS)"
+bet "$PLAYER-a" 80.00 & bet "$PLAYER-b" 80.00 & wait
+
+echo "--- repetir a primeira: idempotentReplay=true, saldo original"
+bet "$PLAYER-a" 80.00
+
+echo "--- provider-b não enxerga a transação do provider-a: 403"
+curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $PROVIDER_B" \
+  $API/providers/provider-a/wagering/transactions/$PLAYER-a
+
+echo "--- reconciliação: saldo 20.00, consistent=true"
+curl -s -X POST -H "Authorization: Bearer $INTERNAL" $API/wallets/$WALLET/reconciliation; echo
+```
+
+**3. Testes:**
+
+```sh
+go vet ./...
+go test ./...                    # unitários, sem infraestrutura (~30 s)
+go test -tags=integration ./...  # tudo contra o Compose: PostgreSQL, Keycloak, LocalStack e 3 réplicas reais (~3 min)
+```
+
+Com `-tags=integration`, nenhum teste é pulado: se um container estiver fora do ar, o teste falha. Para `-race`, veja [`go test -race`](#go-test--race); no Windows ele roda num container.
+
+**4. Parar e apagar tudo:** `docker compose --profile multi down -v`.
+
+### Onde cada exigência do desafio é verificada
+
+| Exigência (§13 do enunciado) | Teste |
+| --- | --- |
+| Money, carteira, estados, regras dos cinco tipos, valores zero, abertura | `internal/domain` |
+| Migrations, constraints, imutabilidade do ledger | `migrations/migrations_test.go` |
+| Atomicidade, locks, inbox, outbox | `internal/infra/postgres`, `internal/application` |
+| Reentrega, retry, DLQ, SIGTERM do consumidor | `internal/infra/sqs` |
+| Composição Fx, start e stop sem vazar goroutines | `internal/app` |
+| Tokens ausentes, inválidos e expirados; isolamento entre provedores; operações internas | `test/integration/auth_test.go` |
+| 1. Mesma aposta 50 vezes em paralelo | `TestSameBetSentFiftyTimesInParallelDebitsOnce` (e `...AcrossInstances`) |
+| 2. Duas apostas de 80.00 sobre 100.00 | `TestTwoBetsCompetingForTheSameBalance` (e `...AcrossInstances`) |
+| 3. Carteiras distintas em paralelo | `TestDistinctWalletsAdvanceInParallel` (e `...OnEveryInstance`) |
+| 4. Três instâncias independentes | `test/multiinstance` (falha se alguma réplica não participou) |
+| 5. Consumidor morto entre commit e remoção da mensagem | `TestConsumerKilledAfterCommitBeforeDeletingTheMessage` |
+| 6. Publishers disputando a outbox | `TestCompetingPublishersLoseNothingAndKeepEachAggregateInOrder`, `TestPublisherKilledAfterSendingRepublishesTheSameEvent` |
+| 7. Reversão antes da referência | `TestReversalArrivingBeforeItsReference` |
+| 8. Reinício preserva idempotência, pendências e consistência | `TestRestartKeepsIdempotencyPendingWorkAndConsistency` |
+| Mesma operação por HTTP e SQS | `TestSameOperationOverHTTPAndSQSHasOneEffect` (e `...AcrossInstances`) |
+
+Todos os cenários terminam conferindo o saldo armazenado contra créditos menos débitos do ledger.
+
 ## Pré-requisitos
 
 | Ferramenta | Versão | Uso |
@@ -305,3 +395,14 @@ deploy/                       realm do Keycloak, script das filas
 test/                         suítes caixa-preta (build tag integration)
 specs/                        especificação de cada etapa
 ```
+
+## Problemas comuns
+
+| Sintoma | Causa e solução |
+| --- | --- |
+| `port is already allocated` | Outra coisa usa 8080, 8081, 8082, 8083, 4566 ou 5432. Copie `.env.example` para `.env` e troque as portas (`APP_PORT`, `KEYCLOAK_PORT`...); com `-tags=integration`, ajuste também as `TEST_*`. |
+| `docker compose up --wait` demora | O Keycloak leva de 1 a 2 minutos na primeira subida. |
+| Testes de integração falham com `connection refused` | O Compose não está de pé: `docker compose --profile multi up -d --build --wait`. |
+| `gofmt -l .` lista arquivos no Windows | Checkout feito antes do `.gitattributes`; clone de novo (o repositório força LF). |
+| `migrate` não acha `/migrations` no Git Bash | Prefixe o comando com `MSYS_NO_PATHCONV=1`. |
+| `-race` reclama de cgo no Windows | Use o comando com `docker run` da seção [`go test -race`](#go-test--race). |
