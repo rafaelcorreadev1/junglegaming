@@ -171,7 +171,7 @@
   <p class="sub">O que foi construído em cada spec, por que foi feito assim e quais conceitos de Go aparecem, para quem vem de C#, Python e TypeScript.</p>
   <div class="meta">
     Repositório: github.com/rafaelcorreadev1/junglegaming<br>
-    Atualizado até a spec 13 · 13/10/2026
+    Atualizado até a spec 14 · 13/10/2026
   </div>
 </section>
 
@@ -206,7 +206,7 @@
       <tr><td>11</td><td>Consumidor SQS, inbox e DLQ</td><td class="status done">Concluída</td></tr>
       <tr><td>12</td><td>Reconciliação</td><td class="status done">Concluída</td></tr>
       <tr><td>13</td><td>Observabilidade</td><td class="status done">Concluída</td></tr>
-      <tr><td>14</td><td>Ciclo de vida Fx e shutdown</td><td class="status todo">A fazer</td></tr>
+      <tr><td>14</td><td>Ciclo de vida Fx e shutdown</td><td class="status done">Concluída</td></tr>
       <tr><td>15</td><td>Testes de integração, concorrência e recuperação</td><td class="status todo">A fazer</td></tr>
       <tr><td>16</td><td>Documentação e entrega</td><td class="status todo">A fazer</td></tr>
     </tbody>
@@ -2975,6 +2975,112 @@ RETURNING ...</code></pre>
     <li><code>internal/app/app.go</code>: <code>fx.Decorate</code> e o value group</li>
     <li><code>internal/infra/httpapi/health.go</code></li>
     <li><code>internal/infra/httpapi/observability_test.go</code></li>
+  </ol>
+</section>
+
+<!-- ============================ SPEC 14 ============================ -->
+<section class="chapter">
+  <div class="chapter-label">Spec 14</div>
+  <h1>Ciclo de vida e shutdown</h1>
+  <p class="lead">Subir só quando tudo de que o serviço depende responde, e descer sem perder nem duplicar trabalho. Grande parte já existia aos pedaços; esta spec junta as peças, corrige a ordem e prova com testes que nada fica para trás.</p>
+
+  <h2>1. O que a spec pedia</h2>
+  <ul>
+    <li>Composição com <code>fx.Module</code>, <code>fx.Provide</code>, <code>fx.Invoke</code>; start e stop pelo <code>fx.Lifecycle</code>.</li>
+    <li>Start valida configuração e dependências.</li>
+    <li>Workers com cancelamento, prazo por execução e término observável.</li>
+    <li>Stop: parar a entrada, concluir ou liberar o que está em andamento, fechar dependências por último.</li>
+  </ul>
+
+  <h2>2. Como o Fx ordena start e stop</h2>
+  <p>Cada construtor que precisa de start/stop registra um <code>fx.Hook</code> no <code>fx.Lifecycle</code>. O Fx roda os <code>OnStart</code> na ordem em que foram registrados e os <code>OnStop</code> na ordem <strong>inversa</strong>. Como um construtor só roda depois das suas dependências, o pool do Postgres sobe antes de quem o usa e desce depois.</p>
+  <p>Faltava um detalhe: o servidor HTTP subia antes dos workers e, portanto, descia depois deles. Enquanto o consumidor terminava o lote, o HTTP continuava aceitando requisições. A correção foi uma linha: registrar o módulo <code>worker</code> antes do <code>httpapi</code>.</p>
+  <table>
+    <thead><tr><th>Start</th><th>Stop</th></tr></thead>
+    <tbody>
+      <tr><td>1. Cliente SQS e checagem das filas</td><td>1. Servidor HTTP (<code>Shutdown</code>)</td></tr>
+      <tr><td>2. Pool do Postgres (ping)</td><td>2. Conexões ociosas do JWKS</td></tr>
+      <tr><td>3. Workers</td><td>3. Consumidor, outbox, referências</td></tr>
+      <tr><td>4. Checagem do JWKS</td><td>4. Pool do Postgres</td></tr>
+      <tr><td>5. Servidor HTTP (último a aceitar tráfego)</td><td>5. Conexões ociosas do SQS</td></tr>
+    </tbody>
+  </table>
+  <p>O teste da aplicação lê no log do Fx a ordem dos <code>OnStop</code> e confere HTTP → workers → pool. Com os módulos na ordem antiga, ele falha.</p>
+
+  <h2>3. Start que falha cedo</h2>
+  <p>É melhor o processo morrer na subida, com uma mensagem clara, do que subir e falhar em toda requisição. Além do ping no banco (spec 05), entraram duas checagens:</p>
+  <ul>
+    <li><strong>Filas SQS:</strong> <code>GetQueueAttributes</code> nas três filas. Uma URL errada impede a subida.</li>
+    <li><strong>JWKS do Keycloak:</strong> busca a lista de chaves uma vez e exige pelo menos uma. Sem isso, o serviço subiria e recusaria todo token.</li>
+  </ul>
+  <p>Se um <code>OnStart</code> falha, o Fx executa o <code>OnStop</code> do que já tinha subido e devolve o erro. Como o HTTP sobe por último, a porta nem chega a abrir; o teste confere isso.</p>
+
+  <h2>4. A parada em duas fases</h2>
+  <p>O consumidor da spec 11 já tinha a ideia certa; agora ela virou um pacote, <code>lifecycle</code>, usado também pelos dois pollers:</p>
+<pre><code>type Loop func(pollCtx, workCtx context.Context)
+
+func Attach(lc fx.Lifecycle, loop Loop)</code></pre>
+  <ol class="flow">
+    <li>O stop cancela <code>pollCtx</code>: o loop não começa rodada nova nem busca mensagem nova.</li>
+    <li>O stop espera a goroutine terminar, até 3s antes do prazo.</li>
+    <li>Se não terminou, cancela <code>workCtx</code>: o trabalho em andamento é interrompido e devolvido.</li>
+    <li>O <code>OnStop</code> só retorna quando a goroutine terminou de fato. Se ela ignorar tudo, o stop devolve erro em vez de fingir que acabou.</li>
+  </ol>
+  <p>"Término observável" é isso: um canal <code>done</code> fechado pelo <code>defer</code> da goroutine. Sem ele, o stop retornaria na hora e o processo poderia fechar o pool com uma transação no meio.</p>
+<pre><code>go func() {
+    defer close(done)
+    loop(pollCtx, workCtx)
+}()</code></pre>
+
+  <h2>5. Prazo por rodada</h2>
+  <p>Cada rodada de um poller recebe <code>context.WithTimeout(workCtx, lease)</code>. O valor não é arbitrário: a reserva (lease) do worker dura 30s, e uma rodada mais longa que isso poderia continuar trabalhando em algo que outra instância já assumiu.</p>
+
+  <h2>6. Goroutines que sobram</h2>
+  <p>O <code>goleak</code> compara as goroutines vivas no fim do teste com as que existiam no começo. O teste sobe a aplicação inteira contra Postgres, LocalStack e um JWKS falso, consulta <code>/health/ready</code> e para.</p>
+  <p>O primeiro achado foi real: o cliente HTTP do SDK da AWS mantém conexões <em>keep-alive</em>, e cada uma tem duas goroutines (<code>persistConn.readLoop</code> e <code>writeLoop</code>). Depois do stop, elas continuavam lá. A correção: o cliente SQS e o verificador de tokens ganharam um <code>http.Transport</code> próprio, e o stop chama <code>CloseIdleConnections</code>. Tirando essa linha, o <code>goleak</code> aponta exatamente essas goroutines.</p>
+  <div class="note"><strong>Por que um transport próprio?</strong> O <code>http.DefaultTransport</code> é global. Fechar as conexões dele afetaria qualquer outro código do processo. Com um transport por cliente, cada componente fecha só o que é seu.</div>
+
+  <h2>7. Como foi testado</h2>
+  <table>
+    <thead><tr><th>Cenário</th><th>Resultado verificado</th></tr></thead>
+    <tbody>
+      <tr><td>Aplicação inteira: start, readiness, stop</td><td>Readiness 200, stop em menos de 1s, nenhuma goroutine sobrando, ordem HTTP → workers → pool</td></tr>
+      <tr><td>Fila inexistente; JWKS sem chaves</td><td>Start falha; porta HTTP fechada</td></tr>
+      <tr><td>Rodada de poller travada</td><td>Cortada no prazo da rodada</td></tr>
+      <tr><td>Stop com rodada em andamento</td><td>A rodada termina; nenhuma nova começa</td></tr>
+      <tr><td>Loop que ignora o stop</td><td>Interrompido 3s antes do prazo; se ignorar também isso, o stop devolve erro</td></tr>
+      <tr><td><code>SIGTERM</code> com 300 mensagens na fila (70 processadas)</td><td>Parada em cerca de 1s, código 0; após o restart, 300 aplicadas uma vez, saldo 700.00, reconciliação consistente</td></tr>
+      <tr><td><code>SIGTERM</code> com requisições HTTP em sequência</td><td>17 respostas 200, 17 débitos; depois, conexão recusada</td></tr>
+    </tbody>
+  </table>
+  <ul>
+    <li>Um susto no caminho: no primeiro teste ponta a ponta, só 10 das 60 mensagens chegaram. A culpa era do script, não do serviço: dentro de um <code>while read</code>, o <code>docker compose exec</code> lia o resto do arquivo pela entrada padrão. Com <code>&lt; /dev/null</code>, todas foram enviadas.</li>
+    <li><code>go test -race</code> passa no container; cobertura de <code>internal/</code> em 93,7% (o teste da aplicação inteira passou a cobrir a composição).</li>
+  </ul>
+
+  <h2>8. Para fixar</h2>
+  <dl class="qa">
+    <dt>Como o Fx decide a ordem do stop?</dt>
+    <dd>Inverte a ordem do start, que segue a ordem em que os hooks foram registrados, e esta segue as dependências.</dd>
+
+    <dt>Por que o HTTP deve subir por último?</dt>
+    <dd>Para só aceitar tráfego quando tudo está pronto e, no stop, ser o primeiro a parar de aceitar.</dd>
+
+    <dt>Para que dois contextos num worker?</dt>
+    <dd>Um diz "não comece nada novo"; o outro, mais tarde, diz "largue o que está fazendo".</dd>
+
+    <dt>O que o <code>goleak</code> encontrou?</dt>
+    <dd>Conexões keep-alive do cliente HTTP vivas depois do stop. Cada componente agora fecha as suas.</dd>
+  </dl>
+
+  <h3>Ordem de leitura do código</h3>
+  <ol>
+    <li><code>internal/infra/lifecycle/background.go</code></li>
+    <li><code>internal/infra/worker/poller.go</code> e <code>module.go</code></li>
+    <li><code>internal/app/app.go</code></li>
+    <li><code>internal/infra/sqs/publisher.go</code>: <code>checkQueuesOnStart</code>, <code>newClient</code></li>
+    <li><code>internal/infra/auth/verifier.go</code>: <code>CheckKeys</code>, <code>Close</code></li>
+    <li><code>internal/app/lifecycle_test.go</code></li>
   </ol>
 </section>
 
